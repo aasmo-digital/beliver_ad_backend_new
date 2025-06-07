@@ -136,7 +136,7 @@ const getallUser = async (req, res) => {
         const users = await User.find(query)
             .skip(skip)
             .limit(parseInt(limit))
-            .sort({ createdAt: -1 });
+            .sort({ createdAt: -1 }); // Each user object will have _id and walletAmount
 
         const totalUsers = await User.countDocuments(query);
 
@@ -145,14 +145,14 @@ const getallUser = async (req, res) => {
             totalUsers,
             totalPages: Math.ceil(totalUsers / limit),
             currentPage: parseInt(page),
-            users
+            users // The walletAmount here will be the current value from the User documents
         });
+
     } catch (error) {
-        console.error("Error fetching user profile:", error);
+        console.error("Error fetching user list:", error);
         res.status(500).json({ message: "Internal Server Error", error: error.message });
     }
 };
-
 const getbyIdUser = async (req, res) => {
     try {
         const { id } = req.params;

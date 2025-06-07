@@ -22,5 +22,5 @@ app.use('/api/user',userRoutes);
 app.use('/api/admin',adminRoutes);
 const PORT = process.env.PORT || 8000;
 app.listen(PORT,()=>{
-    console.log(`Serving running on port${PORT}`);
+    console.log(`Server running on port${PORT}`);
 })

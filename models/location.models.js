@@ -14,13 +14,19 @@ const locationSchema = new mongoose.Schema({
   budget: { type: Number },
   fileUrl: { type: String },
   url: { type: String, default: "" },
-   ratings: [
+  ratings: [
     {
       userId: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
       rating: { type: Number, min: 1, max: 5 },
     }
   ],
   averageRating: { type: Number, default: 0 },
-}, {timestamps: true});
+  slotStartTimes: {
+    type: [String],
+    default: []
+  },
+  mediaFiles: [{ type: String }] // Changed from ObjectId to String to store file paths
+}, { timestamps: true });
 
+// Export the model
 module.exports = mongoose.model('Location', locationSchema);

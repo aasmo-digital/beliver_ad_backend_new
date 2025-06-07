@@ -6,11 +6,12 @@ const dataController = require('../controllers/dataUser.controllers')
 const locationController = require('../controllers/location.controlers')
 const timeSlotsController = require('../controllers/timeSlots.controllers')
 const upload = require('../multer/multerImageVideo');
-const { authenticate, isAdmin, isAdminOrSubAdmin, isSubAdmin } = require('../middleware/auth');
+const { authenticate, isAdmin } = require('../middleware/auth');
 // const { addSubAdmin } = require('../controllers/sub.admin.controllers');
 
 router.post("/register", adminController.register);
 router.post("/login", adminController.login);
+router.get('/location/:locationId', locationController.getSlotsByLocation);
 router.use(authenticate, isAdmin);
 // router.post("/create-subadmin", adminController.createSubAdmin);
 router.post("/create-subadmin", isAdmin, adminController.createSubAdmin);
@@ -25,16 +26,14 @@ router.get("/getall-user", userController.getallUser);
 router.get("/getbyid-user/:id", userController.getbyIdUser);
 router.delete("/delete-user/:id", userController.deleteUser);
 
-
 //location
 router.post('/add-location', upload.single('file'), locationController.createLocation);
 router.get('/getall-location', locationController.getAllLocations);
 router.get('/getbyid-location/:id', locationController.getLocationById);
 router.put('/update-location/:id', upload.single('file'), locationController.updateLocationById);
 router.delete('/delete-location/:id', locationController.deleteLocationById);
-router.get('/location/:locationId', locationController.getSlotsByLocation);
-router.get('/playlist/:locationId', locationController.getAllSlotsPlaylist);
-
+router.get('/slots/generate-daily-schedule', locationController.generateAndStoreAllSlotsForDate);
+router.get('/playlist/:locationId/all-media', locationController.getAllMediaForLocationDate);
 
 //time slots
 router.post('/add-timeslots', timeSlotsController.createTimeSlots);
@@ -44,9 +43,15 @@ router.put('/update-timeslots/:id', timeSlotsController.updateTimeSlotsById);
 router.delete('/delete-timeslots/:id', timeSlotsController.deleteTimeSlotsById);
 router.get('/approved-users', timeSlotsController.getApprovedUsers);
 router.get('/individual-slots', timeSlotsController.getAllSlotInstances);
-router.get('/user-slots/:userId', timeSlotsController.getUserSlotDetails);
+router.get('/slots/stored', timeSlotsController.getStoredSlotInstances);
+router.get('/slots-data', timeSlotsController.getStoredSlots);
+router.get('/verify-slots', timeSlotsController.verifySlotStorage);
+router.get('/user-slots/:campaignBookingId', timeSlotsController.getUserSlotDetails);
 router.get('/peak-slots', timeSlotsController.getPeakSlots);
 router.get('/normal-slots', timeSlotsController.getNormalSlots);
+router.get('/campaigns/:campaignId/reserved-slots', timeSlotsController.getReservedSlotsForCampaign);
+
+
 
 
 // router.get('/approved-users/slots', timeSlotsController.getApprovedUsersWithSlots);

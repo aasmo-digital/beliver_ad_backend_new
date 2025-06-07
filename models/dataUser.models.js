@@ -1,13 +1,18 @@
 const mongoose = require("mongoose");
 
 const userDataSchema = new mongoose.Schema({
-    clientName: {
+    fullName: {
+        //   required: true,   
         type: String,
     },
     clientId: {
         type: mongoose.Schema.Types.ObjectId,
-        ref: "User",
+        ref: "User", // Must point to User collection
         default: null
+    },
+    phone: {
+        type: String,
+        // required: true,
     },
     userId: {
         type: mongoose.Schema.Types.ObjectId,
@@ -41,7 +46,7 @@ const userDataSchema = new mongoose.Schema({
         default: null
     },
     totalBudgets: {
-        type: String,
+        type: Number,
         default: null
     },
     locationId: {
@@ -61,10 +66,30 @@ const userDataSchema = new mongoose.Schema({
         type: String, // This will store the URL or file path
         default: null
     },
-    url: {
-        type: String,
+    slotStartTimes: {
+        type: [String], // Array of times in "HH:mm:ss" or "hh:mm:ss AM/PM" format
+        default: []
+    },
+    slotDetails: [{
+        slotStartTime: String,
+        hourId: String,
+        minId: Number,
+        slotId: String,
+        uid: String,
+        slotType: String, // 'Normal' or 'Peak'
+        slotDate: String,
+        slotIndexNumber: Number
+    }],
+    approvalDate: {
+        type: String, // Or Date, then format it appropriately before storing
         default: null
-    }
+    },
+
+
+    // url: {
+    //     type: String,
+    //     default: null
+    // }
 }, { timestamps: true });
 
 const UserData = mongoose.model('UserData', userDataSchema);
