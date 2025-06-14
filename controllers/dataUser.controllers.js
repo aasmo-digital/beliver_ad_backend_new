@@ -3,6 +3,8 @@ const UserData = require('../models/dataUser.models');
 const dataUserModels = require('../models/dataUser.models');
 const User = require('../models/user.models'); // Assuming you have a User model
 const UserDataUpdateLogModels = require('../models/UserDataUpdateLog.models');
+const { default: mongoose } = require('mongoose');
+const slotInstanceModels = require('../models/slotInstance.models');
 
 // Get all user data with optional search functionality
 // exports.getAllUserData = async (req, res) => {
@@ -66,15 +68,14 @@ exports.getAllUserData = async (req, res) => {
         console.log("Fetching user data (campaigns) with filter:", filterQuery);
 
         const data = await UserData.find(filterQuery)
-            .populate('clientId', 'fullName phone walletAmount') // Populate user details from User model, including walletAmount for reference
-            .populate('locationId', 'location') // Assuming UserData.locationId refers to a Location model
-            // .populate('timeslot', 'name amount') // Uncomment if you have a timeslot field and model
+            // This line correctly fetches the LATEST user details, including the updated walletAmount
+            .populate('clientId', 'fullName phone walletAmount') 
+            .populate('locationId', 'location')
             .sort({ createdAt: -1 });
 
 
         // Optional: Logging to UserDataUpdateLogModels (as in your original code)
-        // Ensure req.user is available if you use it here.
-        if (data.length > 0 && UserDataUpdateLogModels) { // Check if model exists before using
+        if (data.length > 0 && typeof UserDataUpdateLogModels !== 'undefined') { // Check if model exists before using
             const logs = data.map(item => ({
                 userDataId: item._id,
                 updatedBy: req.user?._id || null,
@@ -88,11 +89,11 @@ exports.getAllUserData = async (req, res) => {
                 console.error("Error saving to UserDataUpdateLogModels:", logError);
             }
         }
-        
-        res.status(200).json({ 
+
+        res.status(200).json({
             message: "User Data (Campaigns) Fetched Successfully",
-            total: data.length, 
-            data 
+            total: data.length,
+            data
         });
 
     } catch (error) {
@@ -100,7 +101,6 @@ exports.getAllUserData = async (req, res) => {
         res.status(500).json({ message: 'Error Fetching User Data (Campaigns)', error: error.message });
     }
 };
-
 // Add new user data
 // exports.addUserData = async (req, res) => {
 //     try {
@@ -270,108 +270,315 @@ exports.getUserCampaigns = async (req, res) => {
 };
 
 // get user slots individually
+// user slots for all dates..
+// exports.getUserSlotDetails = async (req, res) => {
+//     try {
+//         const { campaignBookingId } = req.params;
+//         console.log(`[getUserSlotDetails] Received request for campaignBookingId: ${campaignBookingId}`);
+
+
+
+//         // Validate campaignBookingId
+//         if (!campaignBookingId) {
+//             console.log("[getUserSlotDetails] Error: campaignBookingId is missing.");
+//             return res.status(400).json({ success: false, message: "campaignBookingId is required in the URL params." });
+//         }
+//         if (!mongoose.Types.ObjectId.isValid(campaignBookingId)) {
+//             console.log(`[getUserSlotDetails] Error: Invalid campaignBookingId format: ${campaignBookingId}`);
+//             return res.status(400).json({ success: false, message: "Invalid campaignBookingId format." });
+//         }
+
+//         // 1. Fetch the Campaign Booking (dataUserModel) with populated details
+//         const campaignBooking = await dataUserModels.findById(campaignBookingId)
+//             .populate('clientId', 'fullName email role')
+//             .populate('timeslot', 'name amount campaignName')
+//             .populate('locationId', 'location address')
+//             .lean();
+
+//         if (!campaignBooking) {
+//             console.log(`[getUserSlotDetails] Error: Campaign booking not found for ID: ${campaignBookingId}`);
+//             return res.status(404).json({ success: false, message: "Campaign booking not found." });
+//         }
+
+//         // 2. Calculate the date range for the campaign
+//         const duration = parseInt(campaignBooking.duration) || 0;
+//         let startDate, endDate;
+
+//         if (campaignBooking.status === 'Approved' && campaignBooking.slotStartDate) {
+//             startDate = new Date(campaignBooking.slotStartDate);
+//         } else {
+//             startDate = new Date(campaignBooking.createdAt);
+//             startDate.setDate(startDate.getDate() + 1);
+//         }
+
+//         startDate.setUTCHours(0, 0, 0, 0);
+//         endDate = new Date(startDate);
+//         endDate.setDate(endDate.getDate() + duration - 1);
+//         endDate.setUTCHours(23, 59, 59, 999);
+
+//         // 3. Fetch all slot instances for this campaign within the date range
+//         const queryConditions = {
+//             campaignBookingId: new mongoose.Types.ObjectId(campaignBookingId),
+//             slotDate: { $gte: startDate, $lte: endDate },
+//             status: campaignBooking.status === 'Approved' ? 'Booked' : 'Reserved'
+//         };
+
+//         const slotsFromDB = await slotInstanceModels.find(queryConditions)
+//             .populate('locationId', 'location address')
+//             .lean();
+
+//         // 4. Convert time to 24-hour format for proper sorting and sort slots
+//         const sortedSlots = slotsFromDB.map(slot => {
+//             // Convert time to 24-hour format for sorting
+//             let time24 = convertTo24Hour(slot.slotStartTime);
+//             return {
+//                 ...slot,
+//                 sortableTime: time24
+//             };
+//         }).sort((a, b) => {
+//             // First compare dates
+//             const dateCompare = new Date(a.slotDate).getTime() - new Date(b.slotDate).getTime();
+//             if (dateCompare !== 0) return dateCompare;
+
+//             // If same date, compare times
+//             return a.sortableTime.localeCompare(b.sortableTime);
+//         });
+
+//         // Helper function to convert time to 24-hour format
+//         function convertTo24Hour(timeStr) {
+//             if (!timeStr) return '00:00';
+
+//             // Check if already in 24-hour format (contains 'AM' or 'PM')
+//             if (timeStr.includes('AM') || timeStr.includes('PM')) {
+//                 const [time, period] = timeStr.split(' ');
+//                 let [hours, minutes] = time.split(':');
+
+//                 hours = parseInt(hours);
+//                 minutes = minutes || '00';
+
+//                 if (period === 'PM' && hours < 12) hours += 12;
+//                 if (period === 'AM' && hours === 12) hours = 0;
+
+//                 return `${hours.toString().padStart(2, '0')}:${minutes}`;
+//             }
+
+//             // If already in 24-hour format, just return it
+//             return timeStr;
+//         }
+
+//         const campaignNameForResponse = campaignBooking.content || campaignBooking.timeslot?.campaignName || 'N/A';
+
+
+//         // 5. Format the sorted slots for the response
+//         const formattedSlots = sortedSlots.map(slot => {
+//             return {
+//                 slotInstanceId: slot._id,
+//                 campaignName: campaignNameForResponse,
+//                 slotDate: slot.slotDate.toISOString().split('T')[0],
+//                 slotStartTime: slot.slotStartTime,
+//                 slotIndexNumber: slot.slotIndexNumber,
+//                 slotType: slot.slotType,
+//                 status: slot.status,
+//                 mediaFile: slot.mediaFile,
+//                 url: slot.url,
+//                 uid: slot.uid,
+//                 hourId: slot.hourId,
+//                 minId: slot.minId,
+//                 slotId: slot.slotId,
+//                 location: slot.locationId ? {
+//                     id: slot.locationId._id,
+//                     name: slot.locationId.location,
+//                     address: slot.locationId.address,
+//                 } : (campaignBooking.locationId ? {
+//                     id: campaignBooking.locationId._id,
+//                     name: campaignBooking.locationId.location,
+//                     address: campaignBooking.locationId.address,
+//                 } : null),
+//             };
+//         });
+
+//         // 6. Construct the final response payload
+//         const responsePayload = {
+//             success: true,
+//             campaignDetails: {
+//                 id: campaignBooking._id,
+//                 campaignName: campaignBooking.content || campaignBooking.timeslot?.campaignName || 'N/A',
+//                 status: campaignBooking.status,
+//                 duration: campaignBooking.duration,
+//                 totalSlotsInCampaign: campaignBooking.totalSlots,
+//                 normalSlotsInCampaign: campaignBooking.normalSlots,
+//                 peakSlotsInCampaign: campaignBooking.peakSlots,
+//                 campaignStartDate: startDate.toISOString().split('T')[0],
+//                 campaignEndDate: endDate.toISOString().split('T')[0],
+//                 createdAt: campaignBooking.createdAt.toISOString(),
+//                 updatedAt: campaignBooking.updatedAt.toISOString(),
+//                 timeslotType: campaignBooking.timeslot ? {
+//                     name: campaignBooking.timeslot.name,
+//                     amount: campaignBooking.timeslot.amount,
+//                 } : null,
+//                 campaignLocation: campaignBooking.locationId ? {
+//                     id: campaignBooking.locationId._id,
+//                     name: campaignBooking.locationId.location,
+//                     address: campaignBooking.locationId.address,
+//                 } : null,
+//             },
+//             clientDetails: campaignBooking.clientId ? {
+//                 id: campaignBooking.clientId._id,
+//                 fullName: campaignBooking.clientId.fullName,
+//                 email: campaignBooking.clientId.email,
+//                 role: campaignBooking.clientId.role,
+//             } : null,
+//             totalSlotsFound: formattedSlots.length,
+//             slots: formattedSlots
+//         };
+
+//         res.status(200).json(responsePayload);
+
+//     } catch (error) {
+//         console.error('[getUserSlotDetails] Error fetching campaign slot details:', error.message, error.stack);
+//         res.status(500).json({
+//             success: false,
+//             message: 'Server error while fetching campaign slot details.',
+//             error: error.message
+//         });
+//     }
+// };
+
+// user slots for current date..
 exports.getUserSlotDetails = async (req, res) => {
     try {
+        const { campaignBookingId } = req.params;
+        console.log(`[getUserSlotDetails] Received request for campaignBookingId: ${campaignBookingId}`);
 
+        // Validate campaignBookingId
+        if (!campaignBookingId) {
+            console.log("[getUserSlotDetails] Error: campaignBookingId is missing.");
+            return res.status(400).json({ success: false, message: "campaignBookingId is required in the URL params." });
+        }
+        if (!mongoose.Types.ObjectId.isValid(campaignBookingId)) {
+            console.log(`[getUserSlotDetails] Error: Invalid campaignBookingId format: ${campaignBookingId}`);
+            return res.status(400).json({ success: false, message: "Invalid campaignBookingId format." });
+        }
 
-        const clientId = req.params.clientId; // User ID from the URL params
-
-        console.log('Searching for user with ID:', clientId);
-        // Fetching the user by ID and populating necessary details
-        const user = await dataUserModels.findOne({
-            clientId: clientId,
-            status: { $in: ['Approved', 'Booked'] } // Ensure we check both Approved and Booked statuses
-        }).populate('clientId', 'fullName email role')
+        // 1. Fetch the Campaign Booking (dataUserModel) with populated details
+        const campaignBooking = await dataUserModels.findById(campaignBookingId)
+            .populate('clientId', 'fullName email role')
             .populate('timeslot', 'name amount campaignName')
-            .populate('locationId', 'location address');
+            .populate('locationId', 'location address')
+            .lean();
 
-
-        if (!user) {
-            return res.status(404).json({
-                success: false,
-                message: 'User not found or not approved',
-            });
+        if (!campaignBooking) {
+            console.log(`[getUserSlotDetails] Error: Campaign booking not found for ID: ${campaignBookingId}`);
+            return res.status(404).json({ success: false, message: "Campaign booking not found." });
         }
 
-        const userDetails = user.clientId;
-        const location = user.locationId;
-        const timeslot = user.timeslot;
-        const duration = parseInt(user.duration) || 0;
-        const totalSlots = parseInt(user.totalSlots) || 0;
-        const peakSlots = parseInt(user.peakSlots) || 0;
-        const normalSlots = parseInt(user.normalSlots) || 0;
+        // Get current date (UTC)
+        const currentDate = new Date();
+        currentDate.setUTCHours(0, 0, 0, 0);
+        const nextDate = new Date(currentDate);
+        nextDate.setDate(nextDate.getDate() + 1);
 
-        // Helper function to format date
-        const getDateOffset = (date, offsetDays) => {
-            const d = new Date(date);
-            d.setDate(d.getDate() + offsetDays);
-            return d.toISOString().split('T')[0]; // YYYY-MM-DD
-        };
-
-        // Helper function to get slot start time based on index
-        const getSlotTimeByIndex = (index) => {
-            const baseTime = new Date();
-            baseTime.setHours(8, 0, 0, 0);
-            const slotTime = new Date(baseTime.getTime() + (index - 1) * 15000);
-            return slotTime.toTimeString().split(' ')[0]; // HH:mm:ss format
-        };
-
-        const slotDetails = [];
-        let slotCounter = 1;
-
-        // Loop through the duration and add slots (Normal + Peak)
-        for (let day = 0; day < duration; day++) {
-            const slotDate = getDateOffset(user.createdAt, day);
-
-            // Add Normal Slots
-            for (let i = 0; i < normalSlots; i++) {
-                slotDetails.push({
-                    clientId: userDetails._id,
-                    fullName: userDetails.fullName || 'User Deleted',
-                    email: userDetails.email || 'N/A',
-                    role: userDetails.role || 'N/A',
-                    slotType: 'Normal',
-                    slotDate,
-                    slotStartTime: getSlotTimeByIndex(slotCounter),
-                    location: location?.location || 'N/A',
-                    locationAddress: location?.address || 'N/A'
-                });
-                slotCounter++;
-            }
-
-            // Add Peak Slots
-            for (let i = 0; i < peakSlots; i++) {
-                slotDetails.push({
-                    clientId: userDetails._id,
-                    fullName: userDetails.fullName || 'User Deleted',
-                    email: userDetails.email || 'N/A',
-                    role: userDetails.role || 'N/A',
-                    slotType: 'Peak',
-                    slotDate,
-                    slotStartTime: getSlotTimeByIndex(slotCounter),
-                    location: location?.location || 'N/A',
-                    locationAddress: location?.address || 'N/A'
-                });
-                slotCounter++;
-            }
-        }
-
-        res.status(200).json({
-            success: true,
-            clientId,
-            userDetails: {
-                fullName: userDetails.fullName || 'User Deleted',
-                email: userDetails.email || 'N/A',
-                role: userDetails.role || 'N/A',
+        // 2. Fetch only today's slot instances for this campaign
+        const queryConditions = {
+            campaignBookingId: new mongoose.Types.ObjectId(campaignBookingId),
+            slotDate: { 
+                $gte: currentDate,
+                $lt: nextDate
             },
-            totalSlots,
-            peakSlots,
-            normalSlots,
-            slotDetails,
+            status: campaignBooking.status === 'Approved' ? 'Booked' : 'Reserved'
+        };
+
+        const slotsFromDB = await slotInstanceModels.find(queryConditions)
+            .populate('locationId', 'location address')
+            .lean();
+
+        // 3. Convert time to 24-hour format for proper sorting and sort slots
+        const sortedSlots = slotsFromDB.map(slot => {
+            let time24 = convertTo24Hour(slot.slotStartTime);
+            return {
+                ...slot,
+                sortableTime: time24
+            };
+        }).sort((a, b) => a.sortableTime.localeCompare(b.sortableTime));
+
+        // Helper function to convert time to 24-hour format
+        function convertTo24Hour(timeStr) {
+            if (!timeStr) return '00:00';
+
+            if (timeStr.includes('AM') || timeStr.includes('PM')) {
+                const [time, period] = timeStr.split(' ');
+                let [hours, minutes] = time.split(':');
+
+                hours = parseInt(hours);
+                minutes = minutes || '00';
+
+                if (period === 'PM' && hours < 12) hours += 12;
+                if (period === 'AM' && hours === 12) hours = 0;
+
+                return `${hours.toString().padStart(2, '0')}:${minutes}`;
+            }
+
+            return timeStr;
+        }
+
+        const campaignNameForResponse = campaignBooking.content || campaignBooking.timeslot?.campaignName || 'N/A';
+
+        // 4. Format the sorted slots for the response
+        const formattedSlots = sortedSlots.map(slot => {
+            return {
+                slotInstanceId: slot._id,
+                campaignName: campaignNameForResponse,
+                slotDate: slot.slotDate.toISOString().split('T')[0],
+                slotStartTime: slot.slotStartTime,
+                slotIndexNumber: slot.slotIndexNumber,
+                slotType: slot.slotType,
+                status: slot.status,
+                mediaFile: slot.mediaFile,
+                url: slot.url,
+                uid: slot.uid,
+                hourId: slot.hourId,
+                minId: slot.minId,
+                slotId: slot.slotId,
+                location: slot.locationId ? {
+                    id: slot.locationId._id,
+                    name: slot.locationId.location,
+                    address: slot.locationId.address,
+                } : (campaignBooking.locationId ? {
+                    id: campaignBooking.locationId._id,
+                    name: campaignBooking.locationId.location,
+                    address: campaignBooking.locationId.address,
+                } : null),
+            };
         });
+
+        // 5. Construct the final response payload (simplified for current date only)
+        const responsePayload = {
+            success: true,
+            currentDate: currentDate.toISOString().split('T')[0],
+            campaignDetails: {
+                id: campaignBooking._id,
+                campaignName: campaignNameForResponse,
+                status: campaignBooking.status,
+            },
+            clientDetails: campaignBooking.clientId ? {
+                id: campaignBooking.clientId._id,
+                fullName: campaignBooking.clientId.fullName,
+                email: campaignBooking.clientId.email,
+                role: campaignBooking.clientId.role,
+            } : null,
+            totalSlotsToday: formattedSlots.length,
+            slots: formattedSlots
+        };
+
+        res.status(200).json(responsePayload);
+
     } catch (error) {
-        console.error(error);
-        res.status(500).json({ success: false, message: 'Server Error', error: error.message });
+        console.error('[getUserSlotDetails] Error fetching campaign slot details:', error.message, error.stack);
+        res.status(500).json({
+            success: false,
+            message: 'Server error while fetching campaign slot details.',
+            error: error.message
+        });
     }
 };
 
@@ -390,44 +597,224 @@ exports.getUserDataById = async (req, res) => {
 };
 
 // Update User Data by ID
+// exports.updateUserData = async (req, res) => {
+//     console.log("--- updateUserData API CALLED ---");
+//     try {
+//         const { id } = req.params; // This is the _id of the UserData document
+//         const updateData = req.body;
+
+//         console.log(`[DEBUG] updateUserData - Request to update UserData ID: ${id}`);
+//         console.log("[DEBUG] updateUserData - Request body (updateData):", JSON.stringify(updateData, null, 2));
+
+
+//         if (Object.keys(updateData).length === 0) {
+//             console.log("[DEBUG] updateUserData - No fields to update.");
+//             return res.status(400).json({ message: "No fields to update." });
+//         }
+
+//         if (updateData.locationId) {
+//             console.log("[DEBUG] updateUserData - Mapping locationId to location field.");
+//             updateData.location = updateData.locationId;
+//             delete updateData.locationId;
+//         }
+
+//         if (updateData.status && updateData.status === 'Approved') {
+//             const currentDateTime = moment().format('YYYY-MM-DD HH:mm:ss');
+//             updateData.approvalDate = currentDateTime;
+//             console.log(`[DEBUG] updateUserData - Status is 'Approved'. Set approvalDate to: ${updateData.approvalDate}`);
+//         } else if (updateData.hasOwnProperty('status') && updateData.status !== 'Approved') {
+//             updateData.approvalDate = null;
+//             console.log(`[DEBUG] updateUserData - Status is '${updateData.status}'. Set approvalDate to null.`);
+//         }
+
+//         // --- Crucial: Fetch the UserData *before* update to check its current state ---
+//         const campaignBeforeUpdate = await UserData.findById(id).lean(); // .lean() for plain JS object
+//         if (campaignBeforeUpdate) {
+//             console.log("[DEBUG] updateUserData - Campaign state BEFORE update:", JSON.stringify(campaignBeforeUpdate, null, 2));
+//         } else {
+//             console.log(`[DEBUG] updateUserData - Campaign with ID ${id} not found BEFORE update attempt.`);
+//             // It will likely fail in findByIdAndUpdate as well, but this is an early check.
+//         }
+
+//         console.log("[DEBUG] updateUserData - Attempting UserData.findByIdAndUpdate with data:", JSON.stringify(updateData, null, 2));
+//         const updatedUserData = await UserData.findByIdAndUpdate(id, updateData, {
+//             new: true,
+//             runValidators: true,
+//         });
+
+//         if (!updatedUserData) {
+//             console.log(`[DEBUG] updateUserData - UserData (campaign) with ID ${id} not found AFTER update attempt.`);
+//             return res.status(404).json({ message: "User data (campaign) not found." });
+//         }
+//         // Use .toObject() for Mongoose documents if you want to log them cleanly
+//         console.log("[DEBUG] updateUserData - UserData AFTER update (updatedUserData):", JSON.stringify(updatedUserData.toObject(), null, 2));
+
+//         let walletUpdateMessage = null;
+
+//         // --- REFUND LOGIC ---
+//         console.log(`[DEBUG] updateUserData - Checking status for refund. Current updatedUserData.status: '${updatedUserData.status}'`);
+//         if (updatedUserData.status === 'Rejected') {
+//             console.log("[DEBUG] updateUserData - Status IS 'Rejected'. Proceeding with refund logic.");
+
+//             console.log(`[DEBUG] updateUserData - Campaign's clientId: ${updatedUserData.clientId} (Type: ${typeof updatedUserData.clientId})`);
+//             console.log(`[DEBUG] updateUserData - Campaign's totalBudgets: ${updatedUserData.totalBudgets} (Type: ${typeof updatedUserData.totalBudgets})`);
+
+//             let budgetToRefund = 0;
+//             if (typeof updatedUserData.totalBudgets === 'string') {
+//                 budgetToRefund = parseFloat(updatedUserData.totalBudgets);
+//                 console.log(`[DEBUG] updateUserData - totalBudgets was string, parsed to float: ${budgetToRefund}`);
+//             } else if (typeof updatedUserData.totalBudgets === 'number') {
+//                 budgetToRefund = updatedUserData.totalBudgets;
+//                 console.log(`[DEBUG] updateUserData - totalBudgets was number: ${budgetToRefund}`);
+//             } else {
+//                 console.warn(`[DEBUG] updateUserData - totalBudgets is neither string nor number. Value: ${updatedUserData.totalBudgets}, Type: ${typeof updatedUserData.totalBudgets}`);
+//             }
+
+//             if (isNaN(budgetToRefund)) {
+//                 console.warn(`[DEBUG] updateUserData - budgetToRefund is NaN. Original totalBudgets: ${updatedUserData.totalBudgets}. Cannot proceed with refund.`);
+//             }
+
+//             // Ensure clientId exists, budgetToRefund is a valid positive number
+//             if (updatedUserData.clientId && !isNaN(budgetToRefund) && budgetToRefund > 0) {
+//                 const userIdForWalletUpdate = updatedUserData.clientId.toString(); // Ensure it's a string for User.findByIdAndUpdate
+//                 console.log(`[DEBUG] updateUserData - Attempting to refund ${budgetToRefund} to User ID: ${userIdForWalletUpdate}`);
+
+//                 try {
+//                     const userToUpdate = await User.findByIdAndUpdate(
+//                         userIdForWalletUpdate,
+//                         { $inc: { walletAmount: budgetToRefund } },
+//                         { new: true, runValidators: true }
+//                     );
+
+//                     if (!userToUpdate) {
+//                         console.error(`[ERROR] updateUserData - User with ID ${userIdForWalletUpdate} not found. Budget refund failed for UserData ${updatedUserData._id}.`);
+//                         walletUpdateMessage = `Campaign rejected, but user (ID: ${userIdForWalletUpdate}) for refund not found.`;
+//                     } else {
+//                         console.log(`[SUCCESS] updateUserData - Budget of ${budgetToRefund} refunded to user ${userToUpdate._id}. New wallet amount: ${userToUpdate.walletAmount}`);
+//                         walletUpdateMessage = `Campaign rejected. Budget of ${budgetToRefund} refunded to user. New wallet: ${userToUpdate.walletAmount}.`;
+//                     }
+//                 } catch (walletUpdateError) {
+//                     console.error(`[ERROR] updateUserData - Error updating wallet for user ${userIdForWalletUpdate}:`, walletUpdateError.message, walletUpdateError.stack);
+//                     walletUpdateMessage = `Campaign rejected, but error during wallet refund: ${walletUpdateError.message}`;
+//                 }
+//             } else {
+//                 let logMessage = `[WARN] updateUserData - Cannot process refund for UserData ${updatedUserData._id}:`;
+//                 if (!updatedUserData.clientId) logMessage += " clientId is missing from UserData.";
+//                 if (isNaN(budgetToRefund)) logMessage += ` totalBudgets ('${updatedUserData.totalBudgets}') parsed to NaN.`;
+//                 else if (budgetToRefund <= 0) logMessage += ` totalBudgets ('${updatedUserData.totalBudgets}') resulted in non-positive amount (${budgetToRefund}) for refund.`;
+//                 console.warn(logMessage);
+//                 walletUpdateMessage = `Campaign rejected. Refund not processed due to: ${logMessage}`;
+//             }
+//         } else {
+//             console.log(`[DEBUG] updateUserData - Status is NOT 'Rejected' (it's '${updatedUserData.status}'). Skipping refund logic.`);
+//         }
+//         // --- END OF REFUND LOGIC ---
+
+//         const responsePayload = {
+//             message: "User Data (Campaign) Updated Successfully",
+//             data: updatedUserData.toObject(),
+//             approvalDate: updatedUserData.approvalDate,
+//         };
+
+//         if (walletUpdateMessage) {
+//             responsePayload.walletUpdateInfo = walletUpdateMessage;
+//         }
+
+//         console.log("--- updateUserData API COMPLETED ---");
+//         res.status(200).json(responsePayload);
+
+//     } catch (error) {
+//         console.error("--- updateUserData API ERROR ---");
+//         console.error("[ERROR] updateUserData - Error Updating User Data (Campaign):", error.message, error.stack);
+//         res.status(500).json({ message: "Error Updating User Data (Campaign)", error: error.message });
+//     }
+// };
+
 exports.updateUserData = async (req, res) => {
     console.log("--- updateUserData API CALLED ---");
     try {
-        const { id } = req.params; // This is the _id of the UserData document
+        const { id } = req.params;
         const updateData = req.body;
 
         console.log(`[DEBUG] updateUserData - Request to update UserData ID: ${id}`);
-        console.log("[DEBUG] updateUserData - Request body (updateData):", JSON.stringify(updateData, null, 2));
-
+        console.log("[DEBUG] updateUserData - Request body:", JSON.stringify(updateData, null, 2));
 
         if (Object.keys(updateData).length === 0) {
-            console.log("[DEBUG] updateUserData - No fields to update.");
             return res.status(400).json({ message: "No fields to update." });
         }
 
+        // Step 1: Fetch the campaign's current state from the database FIRST.
+        const campaignBeforeUpdate = await UserData.findById(id).lean();
+        if (!campaignBeforeUpdate) {
+            return res.status(404).json({ message: "Campaign not found." });
+        }
+
+        console.log("[DEBUG] updateUserData - Campaign state BEFORE update:", JSON.stringify(campaignBeforeUpdate, null, 2));
+
+        // --- All your existing logic remains unchanged ---
+        if (campaignBeforeUpdate.status !== 'Approved' && updateData.status === 'Approved') {
+            console.log(`[FIX] Campaign ${id} is being approved. Setting permanent start date.`);
+            const today = new Date();
+            today.setUTCHours(0, 0, 0, 0);
+            const startDate = new Date(today);
+            startDate.setUTCDate(today.getUTCDate() + 1);
+            updateData.slotStartDate = startDate;
+            console.log(`[FIX] Permanent slotStartDate set to: ${updateData.slotStartDate.toISOString()}`);
+        }
+
         if (updateData.locationId) {
-            console.log("[DEBUG] updateUserData - Mapping locationId to location field.");
             updateData.location = updateData.locationId;
             delete updateData.locationId;
         }
 
         if (updateData.status && updateData.status === 'Approved') {
-            const currentDateTime = moment().format('YYYY-MM-DD HH:mm:ss');
-            updateData.approvalDate = currentDateTime;
-            console.log(`[DEBUG] updateUserData - Status is 'Approved'. Set approvalDate to: ${updateData.approvalDate}`);
+            updateData.approvalDate = moment().format('YYYY-MM-DD HH:mm:ss');
         } else if (updateData.hasOwnProperty('status') && updateData.status !== 'Approved') {
             updateData.approvalDate = null;
-            console.log(`[DEBUG] updateUserData - Status is '${updateData.status}'. Set approvalDate to null.`);
         }
 
-        // --- Crucial: Fetch the UserData *before* update to check its current state ---
-        const campaignBeforeUpdate = await UserData.findById(id).lean(); // .lean() for plain JS object
-        if (campaignBeforeUpdate) {
-            console.log("[DEBUG] updateUserData - Campaign state BEFORE update:", JSON.stringify(campaignBeforeUpdate, null, 2));
-        } else {
-            console.log(`[DEBUG] updateUserData - Campaign with ID ${id} not found BEFORE update attempt.`);
-            // It will likely fail in findByIdAndUpdate as well, but this is an early check.
+        let walletUpdateMessage = null;
+
+        // --- NEW WALLET ADJUSTMENT LOGIC (Handles both refund and re-commit) ---
+
+        const oldStatus = campaignBeforeUpdate.status;
+        const newStatus = updateData.status;
+
+        // This logic only runs if a status is being changed.
+        if (newStatus && newStatus !== oldStatus) {
+            const amountToChange = campaignBeforeUpdate.totalBudgets;
+            const userId = campaignBeforeUpdate.clientId;
+
+            // CASE 1: REFUND. Status changes FROM something else TO 'Rejected'.
+            if (oldStatus !== 'Rejected' && newStatus === 'Rejected') {
+                console.log(`[WALLET] Status changing to 'Rejected'. Refunding funds.`);
+                if (amountToChange > 0 && userId) {
+                    // ADD money back to wallet using $inc
+                    const user = await User.findByIdAndUpdate(
+                        userId, 
+                        { $inc: { walletAmount: amountToChange } }, 
+                        { new: true }
+                    );
+                    walletUpdateMessage = `Refund processed. ${amountToChange} added to wallet. New balance: ${user.walletAmount}.`;
+                    console.log(`[WALLET] Success: ${walletUpdateMessage}`);
+                }
+            } 
+            // CASE 2: RE-COMMIT. Status changes FROM 'Rejected' TO something else.
+            else if (oldStatus === 'Rejected' && newStatus !== 'Rejected') {
+                console.log(`[WALLET] Status changing from 'Rejected' to '${newStatus}'. Re-committing funds.`);
+                if (amountToChange > 0 && userId) {
+                    // SUBTRACT money from wallet using $inc with a negative value
+                    const user = await User.findByIdAndUpdate(
+                        userId, 
+                        { $inc: { walletAmount: -amountToChange } }, 
+                        { new: true }
+                    );
+                    walletUpdateMessage = `Funds re-committed. ${amountToChange} deducted from wallet. New balance: ${user.walletAmount}.`;
+                    console.log(`[WALLET] Success: ${walletUpdateMessage}`);
+                }
+            }
         }
+        // --- END OF WALLET ADJUSTMENT LOGIC ---
 
         console.log("[DEBUG] updateUserData - Attempting UserData.findByIdAndUpdate with data:", JSON.stringify(updateData, null, 2));
         const updatedUserData = await UserData.findByIdAndUpdate(id, updateData, {
@@ -436,72 +823,8 @@ exports.updateUserData = async (req, res) => {
         });
 
         if (!updatedUserData) {
-            console.log(`[DEBUG] updateUserData - UserData (campaign) with ID ${id} not found AFTER update attempt.`);
             return res.status(404).json({ message: "User data (campaign) not found." });
         }
-        // Use .toObject() for Mongoose documents if you want to log them cleanly
-        console.log("[DEBUG] updateUserData - UserData AFTER update (updatedUserData):", JSON.stringify(updatedUserData.toObject(), null, 2));
-
-        let walletUpdateMessage = null;
-
-        // --- REFUND LOGIC ---
-        console.log(`[DEBUG] updateUserData - Checking status for refund. Current updatedUserData.status: '${updatedUserData.status}'`);
-        if (updatedUserData.status === 'Rejected') {
-            console.log("[DEBUG] updateUserData - Status IS 'Rejected'. Proceeding with refund logic.");
-
-            console.log(`[DEBUG] updateUserData - Campaign's clientId: ${updatedUserData.clientId} (Type: ${typeof updatedUserData.clientId})`);
-            console.log(`[DEBUG] updateUserData - Campaign's totalBudgets: ${updatedUserData.totalBudgets} (Type: ${typeof updatedUserData.totalBudgets})`);
-
-            let budgetToRefund = 0;
-            if (typeof updatedUserData.totalBudgets === 'string') {
-                budgetToRefund = parseFloat(updatedUserData.totalBudgets);
-                console.log(`[DEBUG] updateUserData - totalBudgets was string, parsed to float: ${budgetToRefund}`);
-            } else if (typeof updatedUserData.totalBudgets === 'number') {
-                budgetToRefund = updatedUserData.totalBudgets;
-                console.log(`[DEBUG] updateUserData - totalBudgets was number: ${budgetToRefund}`);
-            } else {
-                console.warn(`[DEBUG] updateUserData - totalBudgets is neither string nor number. Value: ${updatedUserData.totalBudgets}, Type: ${typeof updatedUserData.totalBudgets}`);
-            }
-
-            if (isNaN(budgetToRefund)) {
-                console.warn(`[DEBUG] updateUserData - budgetToRefund is NaN. Original totalBudgets: ${updatedUserData.totalBudgets}. Cannot proceed with refund.`);
-            }
-
-            // Ensure clientId exists, budgetToRefund is a valid positive number
-            if (updatedUserData.clientId && !isNaN(budgetToRefund) && budgetToRefund > 0) {
-                const userIdForWalletUpdate = updatedUserData.clientId.toString(); // Ensure it's a string for User.findByIdAndUpdate
-                console.log(`[DEBUG] updateUserData - Attempting to refund ${budgetToRefund} to User ID: ${userIdForWalletUpdate}`);
-
-                try {
-                    const userToUpdate = await User.findByIdAndUpdate(
-                        userIdForWalletUpdate,
-                        { $inc: { walletAmount: budgetToRefund } },
-                        { new: true, runValidators: true }
-                    );
-
-                    if (!userToUpdate) {
-                        console.error(`[ERROR] updateUserData - User with ID ${userIdForWalletUpdate} not found. Budget refund failed for UserData ${updatedUserData._id}.`);
-                        walletUpdateMessage = `Campaign rejected, but user (ID: ${userIdForWalletUpdate}) for refund not found.`;
-                    } else {
-                        console.log(`[SUCCESS] updateUserData - Budget of ${budgetToRefund} refunded to user ${userToUpdate._id}. New wallet amount: ${userToUpdate.walletAmount}`);
-                        walletUpdateMessage = `Campaign rejected. Budget of ${budgetToRefund} refunded to user. New wallet: ${userToUpdate.walletAmount}.`;
-                    }
-                } catch (walletUpdateError) {
-                    console.error(`[ERROR] updateUserData - Error updating wallet for user ${userIdForWalletUpdate}:`, walletUpdateError.message, walletUpdateError.stack);
-                    walletUpdateMessage = `Campaign rejected, but error during wallet refund: ${walletUpdateError.message}`;
-                }
-            } else {
-                let logMessage = `[WARN] updateUserData - Cannot process refund for UserData ${updatedUserData._id}:`;
-                if (!updatedUserData.clientId) logMessage += " clientId is missing from UserData.";
-                if (isNaN(budgetToRefund)) logMessage += ` totalBudgets ('${updatedUserData.totalBudgets}') parsed to NaN.`;
-                else if (budgetToRefund <= 0) logMessage += ` totalBudgets ('${updatedUserData.totalBudgets}') resulted in non-positive amount (${budgetToRefund}) for refund.`;
-                console.warn(logMessage);
-                walletUpdateMessage = `Campaign rejected. Refund not processed due to: ${logMessage}`;
-            }
-        } else {
-            console.log(`[DEBUG] updateUserData - Status is NOT 'Rejected' (it's '${updatedUserData.status}'). Skipping refund logic.`);
-        }
-        // --- END OF REFUND LOGIC ---
 
         const responsePayload = {
             message: "User Data (Campaign) Updated Successfully",
@@ -512,17 +835,16 @@ exports.updateUserData = async (req, res) => {
         if (walletUpdateMessage) {
             responsePayload.walletUpdateInfo = walletUpdateMessage;
         }
-        
+
         console.log("--- updateUserData API COMPLETED ---");
         res.status(200).json(responsePayload);
 
     } catch (error) {
         console.error("--- updateUserData API ERROR ---");
-        console.error("[ERROR] updateUserData - Error Updating User Data (Campaign):", error.message, error.stack);
+        console.error("[ERROR] updateUserData:", error.message, error.stack);
         res.status(500).json({ message: "Error Updating User Data (Campaign)", error: error.message });
     }
 };
-
 
 // Delete User Data by ID
 exports.deleteUserDataById = async (req, res) => {

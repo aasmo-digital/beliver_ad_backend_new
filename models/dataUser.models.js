@@ -84,6 +84,7 @@ const userDataSchema = new mongoose.Schema({
         type: String, // Or Date, then format it appropriately before storing
         default: null
     },
+    slotStartDate: { type: Date, default: null },
 
 
     // url: {

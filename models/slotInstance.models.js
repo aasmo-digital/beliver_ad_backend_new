@@ -6,7 +6,7 @@ const slotInstanceSchema = new mongoose.Schema({
   fullName: String,
   email: String,
   role: String,
-  status: { type: String, enum: ['Booked', 'Available'], default: 'Available' },
+  status: { type: String, enum: ['Booked', 'Available', 'Reserved'], default: 'Available' },
   duration: Number,
   totalSlots: Number,
   peakSlots: Number,

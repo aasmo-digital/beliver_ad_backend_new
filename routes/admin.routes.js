@@ -84,6 +84,9 @@ router.post(
 
 router.get('/getall-media', timeSlotsController.getAllMedia);
 
+router.get('/payment-report', timeSlotsController.getPaymentReport);
+
+
 // // sub admin
 // // ✅ Protected route - Only admin can add sub-admin
 // router.post("/add-sub-admin", authenticate, isAdmin, addSubAdmin);

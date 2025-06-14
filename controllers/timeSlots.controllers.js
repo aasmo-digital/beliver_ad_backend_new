@@ -5,6 +5,7 @@ const slotInstanceModels = require('../models/slotInstance.models');
 const TimeSlots = require('../models/timeSlots.models');
 const userModels = require('../models/slotInstance.models');
 const { default: mongoose } = require('mongoose');
+const UserData = require('../models/dataUser.models');
 
 
 // Create TimeSlots
@@ -1318,673 +1319,281 @@ exports.getApprovedUsers = async (req, res) => {
 
 // Define window properties (0-indexed global slots, each 15 seconds)
 const WINDOW_CONFIG = {
-    NORMAL_WINDOW_1: { startGlobalIndex: 0, slots: (10 * 60 * 60) / 15, type: 'Normal' }, // 8am - 6pm (10 hours)
-    PEAK_WINDOW:     { startGlobalIndex: 0, slots: (4 * 60 * 60) / 15,  type: 'Peak'   }, // 6pm - 10pm (4 hours)
-    NORMAL_WINDOW_2: { startGlobalIndex: 0, slots: (2 * 60 * 60) / 15,  type: 'Normal' }  // 10pm - 12am (2 hours)
+  NORMAL_WINDOW_1: { startGlobalIndex: 0, slots: 2400, type: 'Normal' },
+  PEAK_WINDOW: { startGlobalIndex: 2400, slots: 960, type: 'Peak' },
+  NORMAL_WINDOW_2: { startGlobalIndex: 3360, slots: 480, type: 'Normal' }
 };
-// Adjust startGlobalIndex based on preceding windows
-WINDOW_CONFIG.PEAK_WINDOW.startGlobalIndex = WINDOW_CONFIG.NORMAL_WINDOW_1.slots;
-WINDOW_CONFIG.NORMAL_WINDOW_2.startGlobalIndex = WINDOW_CONFIG.PEAK_WINDOW.startGlobalIndex + WINDOW_CONFIG.PEAK_WINDOW.slots;
+WINDOW_CONFIG.NORMAL_WINDOW_1.endGlobalIndex = 2400;
+WINDOW_CONFIG.PEAK_WINDOW.endGlobalIndex = 3360;
+WINDOW_CONFIG.NORMAL_WINDOW_2.endGlobalIndex = 3840;
+const TOTAL_SLOTS_PER_DAY = 3840;
 
-// Calculate endGlobalIndex for convenience
-WINDOW_CONFIG.NORMAL_WINDOW_1.endGlobalIndex = WINDOW_CONFIG.NORMAL_WINDOW_1.startGlobalIndex + WINDOW_CONFIG.NORMAL_WINDOW_1.slots;
-WINDOW_CONFIG.PEAK_WINDOW.endGlobalIndex     = WINDOW_CONFIG.PEAK_WINDOW.startGlobalIndex     + WINDOW_CONFIG.PEAK_WINDOW.slots;
-WINDOW_CONFIG.NORMAL_WINDOW_2.endGlobalIndex = WINDOW_CONFIG.NORMAL_WINDOW_2.startGlobalIndex + WINDOW_CONFIG.NORMAL_WINDOW_2.slots;
-
-const TOTAL_SLOTS_PER_DAY = WINDOW_CONFIG.NORMAL_WINDOW_1.slots + WINDOW_CONFIG.PEAK_WINDOW.slots + WINDOW_CONFIG.NORMAL_WINDOW_2.slots;
-const TOTAL_NORMAL_SLOTS_AVAILABLE = WINDOW_CONFIG.NORMAL_WINDOW_1.slots + WINDOW_CONFIG.NORMAL_WINDOW_2.slots;
-const TOTAL_PEAK_SLOTS_AVAILABLE   = WINDOW_CONFIG.PEAK_WINDOW.slots;
-
+// Correct, UTC-safe date offset helper
 const getDateOffset = (baseDate, offsetDays) => {
   const d = new Date(baseDate);
-  d.setDate(d.getDate() + offsetDays);
+  d.setUTCDate(d.getUTCDate() + offsetDays);
   return d.toISOString().split('T')[0];
 };
 
-const getSlotTimeInfoByIndexGlobal = index => { // index is 1-based global slot number
-  const baseTime = new Date(); // Base for time calculation, date part is ignored
-  baseTime.setHours(8, 0, 0, 0); // Start at 8:00:00 AM
-  const slotDateTime = new Date(baseTime.getTime() + (index - 1) * 15000); // 15 seconds per slot
-
-  let hours = slotDateTime.getHours();
-  const minutes = slotDateTime.getMinutes().toString().padStart(2, '0');
-  const seconds = slotDateTime.getSeconds().toString().padStart(2, '0');
+// Slot Time Info helper (no changes needed)
+const getSlotTimeInfoByIndexGlobal = (index) => {
+  const baseTime = new Date();
+  baseTime.setUTCHours(8, 0, 0, 0); // Use UTC for consistency
+  const slotDateTime = new Date(baseTime.getTime() + (index - 1) * 15000);
+  let hours = slotDateTime.getUTCHours();
+  const minutes = slotDateTime.getUTCMinutes().toString().padStart(2, '0');
+  const seconds = slotDateTime.getUTCSeconds().toString().padStart(2, '0');
   const ampm = hours >= 12 ? 'PM' : 'AM';
   const displayHours = (hours % 12 === 0) ? 12 : hours % 12;
   const timeString = `${displayHours}:${minutes}:${seconds} ${ampm}`;
-  return { timeString, slotDateTime }; // slotDateTime contains the correct time on an arbitrary date
+  return { timeString, slotDateTime };
 };
 
-const getSlotTypeByTimeGlobal = (slotDateTime) => { // slotDateTime is a Date object with the time
-  const hours = slotDateTime.getHours(); // 0-23
-  if (hours >= 8 && hours < 18) { return 'Normal'; } // 8:00 AM - 5:59 PM
-  else if (hours >= 18 && hours < 22) { return 'Peak'; }   // 6:00 PM - 9:59 PM
-  else if (hours >= 22 && hours < 24) { return 'Normal'; } // 10:00 PM - 11:59 PM
-  return 'Undefined'; // Should not happen if globalIndex is correct
+// Slot Type helper (no changes needed)
+const getSlotTypeByTimeGlobal = (slotDateTime) => {
+  const hours = slotDateTime.getUTCHours();
+  if (hours >= 18 && hours < 22) { return 'Peak'; }
+  return 'Normal';
 };
 
-// New distribution function
-function distributeSlotsForUser(
-    dailySchedule,
-    userSlotRequests, // Array of base slot data objects for this user, for this slot type
-    slotType,
-    userOrderOffset, // 0-indexed order of this user for this slot type today (for staggering)
-    getSlotTimeInfoFn // function to get time string from global index
-) {
-    if (!userSlotRequests || userSlotRequests.length === 0) {
-        return;
+// The CORRECT slot distribution function
+function distributeSlotsForUser(dailySchedule, slotsToPlace, slotType, userProcessingOrder) {
+  if (!slotsToPlace || slotsToPlace.length === 0) return;
+
+  const targetWindows = slotType === 'Peak'
+    ? [WINDOW_CONFIG.PEAK_WINDOW]
+    : [WINDOW_CONFIG.NORMAL_WINDOW_1, WINDOW_CONFIG.NORMAL_WINDOW_2];
+
+  // Collect all available slots in order
+  const availableSlotIndices = [];
+  for (const window of targetWindows) {
+    for (let i = window.startGlobalIndex; i < window.endGlobalIndex; i++) {
+      if (dailySchedule[i] === null) {
+        availableSlotIndices.push(i);
+      }
     }
-    const numUserSlotsToPlace = userSlotRequests.length;
-    let slotsSuccessfullyPlacedCount = 0;
-    const assignedCampaignStatus = userSlotRequests[0].campaignStatus; // 'Approved' or 'Pending'
-    const finalSlotStatus = assignedCampaignStatus === 'Approved' ? 'Booked' : 'Reserved';
+  }
 
-    if (slotType === 'Normal') {
-        if (TOTAL_NORMAL_SLOTS_AVAILABLE === 0 && numUserSlotsToPlace > 0) {
-            console.warn(`No normal slots available in config to place ${numUserSlotsToPlace} slots for campaign ${userSlotRequests[0].campaignName}`);
-            return;
+  const slotsToActuallyPlace = Math.min(slotsToPlace.length, availableSlotIndices.length);
+  if (slotsToActuallyPlace === 0) return;
+
+  // NEW DISTRIBUTION LOGIC:
+  if (slotsToActuallyPlace === 1) {
+    // If only one slot, place it at the first available position
+    const globalIndexToPlaceAt = availableSlotIndices[0];
+    slotsToPlace[0].assignedGlobalIndex = globalIndexToPlaceAt;
+    dailySchedule[globalIndexToPlaceAt] = slotsToPlace[0];
+  } else {
+    // For multiple slots, distribute them evenly across available slots
+    const interval = Math.floor(availableSlotIndices.length / slotsToActuallyPlace);
+    for (let i = 0; i < slotsToActuallyPlace; i++) {
+      const pickIndex = Math.min(i * interval, availableSlotIndices.length - 1);
+      const globalIndexToPlaceAt = availableSlotIndices[pickIndex];
+
+      if (dailySchedule[globalIndexToPlaceAt] === null) {
+        slotsToPlace[i].assignedGlobalIndex = globalIndexToPlaceAt;
+        dailySchedule[globalIndexToPlaceAt] = slotsToPlace[i];
+      } else {
+        // If the ideal slot is taken, find the next available
+        const fallbackIndex = availableSlotIndices.find(idx => dailySchedule[idx] === null);
+        if (fallbackIndex !== undefined) {
+          slotsToPlace[i].assignedGlobalIndex = fallbackIndex;
+          dailySchedule[fallbackIndex] = slotsToPlace[i];
         }
-        const interval = numUserSlotsToPlace > 0 ? TOTAL_NORMAL_SLOTS_AVAILABLE / numUserSlotsToPlace : TOTAL_NORMAL_SLOTS_AVAILABLE;
-
-        for (let i = 0; i < numUserSlotsToPlace; i++) {
-            let targetNthNormalSlotProgress = i * interval; // This is a "progress point" in the total normal slots
-            let globalIndex;
-
-            // Attempt to place with userOrderOffset (staggering)
-            let currentOffsetAttempt = userOrderOffset;
-            let placed = false;
-
-            // Try to find a slot, first at ideal position with offset, then searching forward
-            // We need to search within the combined conceptual normal slots space
-            // then map to actual global indices.
-
-            let searchStartGlobalIndex = -1;
-            let attemptsInWindow1 = 0;
-            let attemptsInWindow2 = 0;
-
-            // Calculate initial target global index
-            let initialTargetGlobalSlotWithinNormalSpace = Math.floor(targetNthNormalSlotProgress) + currentOffsetAttempt;
-
-            if (initialTargetGlobalSlotWithinNormalSpace < WINDOW_CONFIG.NORMAL_WINDOW_1.slots) {
-                searchStartGlobalIndex = WINDOW_CONFIG.NORMAL_WINDOW_1.startGlobalIndex + initialTargetGlobalSlotWithinNormalSpace;
-            } else {
-                const indexInNormalWindow2 = initialTargetGlobalSlotWithinNormalSpace - WINDOW_CONFIG.NORMAL_WINDOW_1.slots;
-                if (indexInNormalWindow2 < WINDOW_CONFIG.NORMAL_WINDOW_2.slots) {
-                    searchStartGlobalIndex = WINDOW_CONFIG.NORMAL_WINDOW_2.startGlobalIndex + indexInNormalWindow2;
-                } else {
-                    // Target is beyond available normal slots even with staggering
-                    console.warn(`Normal slot ${i + 1}/${numUserSlotsToPlace} for campaign ${userSlotRequests[0].campaignName} (userOrder ${userOrderOffset}) - initial target out of bounds.`);
-                    continue;
-                }
-            }
-            
-            globalIndex = searchStartGlobalIndex;
-
-            // Search loop
-            const MAX_SEARCH_ATTEMPTS_PER_SLOT = TOTAL_NORMAL_SLOTS_AVAILABLE; // Max reasonable attempts
-            for(let attempt = 0; attempt < MAX_SEARCH_ATTEMPTS_PER_SLOT; attempt++) {
-                // Ensure globalIndex is valid
-                if (globalIndex >= TOTAL_SLOTS_PER_DAY) {
-                     globalIndex = WINDOW_CONFIG.NORMAL_WINDOW_1.startGlobalIndex; // Wrap around (less ideal, but prevents crash)
-                }
-
-                const isInNormalWindow1 = globalIndex >= WINDOW_CONFIG.NORMAL_WINDOW_1.startGlobalIndex && globalIndex < WINDOW_CONFIG.NORMAL_WINDOW_1.endGlobalIndex;
-                const isInNormalWindow2 = globalIndex >= WINDOW_CONFIG.NORMAL_WINDOW_2.startGlobalIndex && globalIndex < WINDOW_CONFIG.NORMAL_WINDOW_2.endGlobalIndex;
-
-                if ((isInNormalWindow1 || isInNormalWindow2) && dailySchedule[globalIndex] === null) {
-                    const slotDataToPlace = { ...userSlotRequests[slotsSuccessfullyPlacedCount] }; // Get next request
-                    slotDataToPlace.status = finalSlotStatus;
-                    // actualAssignedGlobalIndex will be used to retrieve time later
-                    slotDataToPlace.actualAssignedGlobalIndex = globalIndex; 
-                    dailySchedule[globalIndex] = slotDataToPlace;
-                    
-                    // Mark original request object with its assigned index for later time retrieval
-                    if(userSlotRequests[slotsSuccessfullyPlacedCount]) {
-                        userSlotRequests[slotsSuccessfullyPlacedCount].assignedGlobalIndex = globalIndex;
-                    }
-                    slotsSuccessfullyPlacedCount++;
-                    placed = true;
-                    break; // Slot placed
-                }
-
-                globalIndex++; // Try next slot
-
-                // If moving from NW1 end, jump to NW2 start
-                if (globalIndex === WINDOW_CONFIG.NORMAL_WINDOW_1.endGlobalIndex && !isInNormalWindow2) {
-                    globalIndex = WINDOW_CONFIG.NORMAL_WINDOW_2.startGlobalIndex;
-                }
-                // If moving from NW2 end, wrap to NW1 start (or consider it unplaceable)
-                else if (globalIndex === WINDOW_CONFIG.NORMAL_WINDOW_2.endGlobalIndex && !isInNormalWindow1) {
-                     // This means we've searched all normal slots for this starting point
-                     // This logic might need refinement if full search is desired instead of direct next.
-                     // For now, a simple linear scan is implemented.
-                     break; // Could not place in reasonable linear scan
-                }
-            }
-
-
-            if (!placed) {
-                console.warn(`Could not place Normal slot ${i + 1}/${numUserSlotsToPlace} for campaign ${userSlotRequests[0].campaignName} (userOrder ${userOrderOffset}).`);
-            }
-             if (slotsSuccessfullyPlacedCount >= numUserSlotsToPlace) break; // All slots for this user placed
-        }
-    } else if (slotType === 'Peak') {
-        if (TOTAL_PEAK_SLOTS_AVAILABLE === 0 && numUserSlotsToPlace > 0) {
-            console.warn(`No peak slots available in config to place ${numUserSlotsToPlace} slots for campaign ${userSlotRequests[0].campaignName}`);
-            return;
-        }
-        const interval = numUserSlotsToPlace > 0 ? TOTAL_PEAK_SLOTS_AVAILABLE / numUserSlotsToPlace : TOTAL_PEAK_SLOTS_AVAILABLE;
-
-        for (let i = 0; i < numUserSlotsToPlace; i++) {
-            let targetNthPeakSlotProgress = i * interval;
-            let placed = false;
-
-            let initialTargetGlobalSlotWithinPeakSpace = Math.floor(targetNthPeakSlotProgress) + userOrderOffset;
-            let searchStartGlobalIndex = WINDOW_CONFIG.PEAK_WINDOW.startGlobalIndex + initialTargetGlobalSlotWithinPeakSpace;
-            
-            globalIndex = searchStartGlobalIndex;
-
-            const MAX_SEARCH_ATTEMPTS_PER_SLOT = TOTAL_PEAK_SLOTS_AVAILABLE;
-            for(let attempt = 0; attempt < MAX_SEARCH_ATTEMPTS_PER_SLOT; attempt++) {
-                if (globalIndex >= WINDOW_CONFIG.PEAK_WINDOW.endGlobalIndex) {
-                    // globalIndex = WINDOW_CONFIG.PEAK_WINDOW.startGlobalIndex; // Wrap around peak window
-                    break; // Exhausted peak window for this try
-                }
-
-                if (dailySchedule[globalIndex] === null) {
-                    const slotDataToPlace = { ...userSlotRequests[slotsSuccessfullyPlacedCount] };
-                    slotDataToPlace.status = finalSlotStatus;
-                    slotDataToPlace.actualAssignedGlobalIndex = globalIndex;
-                    dailySchedule[globalIndex] = slotDataToPlace;
-
-                    if(userSlotRequests[slotsSuccessfullyPlacedCount]) {
-                        userSlotRequests[slotsSuccessfullyPlacedCount].assignedGlobalIndex = globalIndex;
-                    }
-                    slotsSuccessfullyPlacedCount++;
-                    placed = true;
-                    break; // Slot placed
-                }
-                globalIndex++; // Try next slot
-            }
-
-            if (!placed) {
-                console.warn(`Could not place Peak slot ${i + 1}/${numUserSlotsToPlace} for campaign ${userSlotRequests[0].campaignName} (userOrder ${userOrderOffset}).`);
-            }
-            if (slotsSuccessfullyPlacedCount >= numUserSlotsToPlace) break;
-        }
+      }
     }
-
-    if (slotsSuccessfullyPlacedCount < numUserSlotsToPlace) {
-        console.warn(`Placed only ${slotsSuccessfullyPlacedCount}/${numUserSlotsToPlace} ${slotType} slots for campaign ${userSlotRequests[0].campaignName} (userOrder ${userOrderOffset}).`);
-    }
+  }
 }
 
-exports.getStoredSlotInstancesByDate = async (req, res) => {
-  try {
-    if (!req.query.date) {
-      return res.status(400).json({ success: false, message: "A 'date' query parameter is required in YYYY-MM-DD format." });
-    }
 
-    const targetDate = new Date(req.query.date);
-    targetDate.setUTCHours(0, 0, 0, 0); // Normalize to UTC midnight
-    const targetDateStr = targetDate.toISOString().split('T')[0];
-
-    console.log(`RETRIEVER: Fetching stored slots for date: ${targetDateStr}`);
-
-    // Query the database for all slots on the specified date
-    const storedSlots = await slotInstanceModels.find({
-        slotDate: targetDate
-      })
-      .sort({ slotIndexNumber: 1 }) // Ensure slots are in chronological order
-      .lean(); // Use .lean() for faster, read-only operations
-
-    if (storedSlots.length === 0) {
-      console.log(`RETRIEVER: No stored slots found for ${targetDateStr}. The generator may not have run for this date.`);
-      // It's important to return an empty array so the frontend can display an empty schedule
-      return res.status(200).json({
-        success: true,
-        message: `No slots found for ${targetDateStr}. The schedule may not have been generated yet.`,
-        date: targetDateStr,
-        totalSlotInstances: 0,
-        slots: [],
-      });
-    }
-
-    console.log(`RETRIEVER: Found and returning ${storedSlots.length} slots for ${targetDateStr}.`);
-
-    res.status(200).json({
-      success: true,
-      date: targetDateStr,
-      totalSlotInstances: storedSlots.length,
-      slots: storedSlots,
-    });
-
-  } catch (error) {
-    console.error(`ERROR in getStoredSlotInstancesByDate for date ${req.query.date}:`, error.message, error.stack);
-    res.status(500).json({ success: false, message: 'Server Error', error: error.message });
-  }
-};
-// --- End of Helper Functions ---
-
-
-
-
+// THE MAIN GENERATOR FUNCTION (FINAL VERSION)
 exports.getAllSlotInstances = async (req, res) => {
   try {
     const primaryTargetDate = req.query.date ? new Date(req.query.date) : new Date();
-    primaryTargetDate.setHours(0, 0, 0, 0);
+    primaryTargetDate.setUTCHours(0, 0, 0, 0);
     const primaryTargetDateStr = primaryTargetDate.toISOString().split('T')[0];
 
-    console.log(`RUN_ID: ${new Date().toISOString()} - Primary target date for this run: ${primaryTargetDateStr}`);
-
-    // --- Phase 1: Proactively generate and store Reserved slots for Pending campaigns ---
-    console.log("PHASE 1: Starting proactive generation for Pending campaigns.");
-    const pendingCampaigns = await dataUserModels.find({ status: 'Pending' })
-      .populate('clientId', 'fullName email role')
-      .populate('timeslot', 'name amount campaignName')
-      .populate('locationId', 'location address');
-
-    console.log(`PHASE 1: Found ${pendingCampaigns.length} pending campaigns to analyze.`);
-
-    // NEW LOGIC: Group campaigns by the date they are active
-    const campaignsByDate = new Map();
-
-    for (const pendingUser of pendingCampaigns) {
-      // Basic validation for the campaign
-      const userDetails = pendingUser.clientId;
-      const location = pendingUser.locationId;
-      const duration = parseInt(pendingUser.duration) || 0;
-      if (!userDetails || !location?._id || duration === 0) {
-        continue;
-      }
-
-      const campaignActivityDate = new Date(pendingUser.updatedAt);
-      campaignActivityDate.setHours(0, 0, 0, 0);
-      const campaignSlotStartDate = getDateOffset(campaignActivityDate, 0);
-
-      // For each day this campaign is active, add it to our date-based map
-      for (let dayOffset = 0; dayOffset < duration; dayOffset++) {
-        const campaignDayTargetDateStr = getDateOffset(campaignSlotStartDate, dayOffset);
-        if (!campaignsByDate.has(campaignDayTargetDateStr)) {
-          campaignsByDate.set(campaignDayTargetDateStr, []);
-        }
-        campaignsByDate.get(campaignDayTargetDateStr).push(pendingUser);
-      }
-    }
-
-    console.log(`PHASE 1: Found pending campaigns active on ${campaignsByDate.size} different dates.`);
-
-    // NEW LOGIC: Process reservations DATE BY DATE, not campaign by campaign
-    for (const [dateStr, campaignsForThisDate] of campaignsByDate.entries()) {
-      console.log(`\nPHASE 1: Processing date ${dateStr}, which has ${campaignsForThisDate.length} pending campaign(s).`);
-
-      const targetDate = new Date(dateStr);
-      targetDate.setUTCHours(0, 0, 0, 0);
-
-      // Create ONE schedule for this entire day
-      const dailyScheduleForThisDay = new Array(TOTAL_SLOTS_PER_DAY).fill(null);
-      const allNewSlotsForThisDay = [];
-
-      // IMPORTANT: Pre-fill the schedule with already BOOKED slots for this day to avoid conflicts.
-      const bookedSlots = await slotInstanceModels.find({ slotDate: targetDate, status: 'Booked' });
-      if (bookedSlots.length > 0) {
-        console.log(`PHASE 1: Date ${dateStr} has ${bookedSlots.length} pre-existing 'Booked' slots. Adding them to the schedule.`);
-        for (const bookedSlot of bookedSlots) {
-          // slotIndexNumber is 1-based, array is 0-based
-          const index = bookedSlot.slotIndexNumber - 1;
-          if (index >= 0 && index < TOTAL_SLOTS_PER_DAY) {
-            dailyScheduleForThisDay[index] = bookedSlot.toObject(); // Mark as taken
-          }
-        }
-      }
-
-      // Sort campaigns for this day to ensure consistent processing order
-      campaignsForThisDate.sort((a, b) => new Date(a.createdAt) - new Date(b.createdAt));
-
-      // Now process each pending campaign against the SAME daily schedule
-      for (const pendingUser of campaignsForThisDate) {
-        const campaignLogId = pendingUser._id.toString();
-        const userDetails = pendingUser.clientId;
-        const location = pendingUser.locationId;
-        const normalSlotsCount = parseInt(pendingUser.normalSlots) || 0;
-        const peakSlotsCount = parseInt(pendingUser.peakSlots) || 0;
-
-        if ((normalSlotsCount + peakSlotsCount) === 0) continue;
-
-        console.log(`PHASE 1: [Date: ${dateStr}] Placing slots for pending campaign: ${pendingUser.content || pendingUser.timeslot?.campaignName}`);
-
-        const commonInfoBase = {
-          clientId: userDetails._id, campaignBookingId: pendingUser._id, fullName: userDetails.fullName || 'N/A',
-          email: userDetails.email || 'N/A', role: userDetails.role || 'N/A',
-          createdAt: pendingUser.createdAt, updatedAt: pendingUser.updatedAt,
-          duration: pendingUser.duration, totalSlots: Number(pendingUser.totalSlots) || 0,
-          peakSlots: peakSlotsCount, normalSlots: normalSlotsCount,
-          campaignName: pendingUser.content || pendingUser.timeslot?.campaignName || 'N/A',
-          campaignId: pendingUser.timeslot?._id || null, timeslotName: pendingUser.timeslot?.name || 'N/A',
-          location: location.location, locationAddress: location.address, locationId: location._id.toString(),
-          campaignStatus: 'Pending', status: 'Reserved'
-        };
-
-        const slotsRequestedNormal = [];
-        for (let i = 0; i < normalSlotsCount; i++) slotsRequestedNormal.push({ ...commonInfoBase, slotType: 'Normal' });
-        const slotsRequestedPeak = [];
-        for (let i = 0; i < peakSlotsCount; i++) slotsRequestedPeak.push({ ...commonInfoBase, slotType: 'Peak' });
-
-        // ** THE KEY CHANGE IS HERE: userOrderOffset is always 0 **
-        // This forces the distribution to always start from the first available slot, not a staggered position.
-        if (slotsRequestedNormal.length > 0) {
-          distributeSlotsForUser(dailyScheduleForThisDay, slotsRequestedNormal, 'Normal', 0, getSlotTimeInfoByIndexGlobal);
-        }
-        if (slotsRequestedPeak.length > 0) {
-          distributeSlotsForUser(dailyScheduleForThisDay, slotsRequestedPeak, 'Peak', 0, getSlotTimeInfoByIndexGlobal);
-        }
-      }
-
-      // After all campaigns for the day are processed, collect the new reservations
-      for (let globalIndex = 0; globalIndex < TOTAL_SLOTS_PER_DAY; globalIndex++) {
-        const scheduleEntry = dailyScheduleForThisDay[globalIndex];
-        // We only care about the 'Reserved' slots we just added. We check for `campaignStatus` which we added in our `commonInfoBase`.
-        if (scheduleEntry && scheduleEntry.status === 'Reserved' && scheduleEntry.campaignStatus === 'Pending') {
-          const { timeString, slotDateTime } = getSlotTimeInfoByIndexGlobal(globalIndex + 1);
-          const determinedSlotType = getSlotTypeByTimeGlobal(slotDateTime);
-
-          const timeParts = timeString.split(/[: ]/); let hour = parseInt(timeParts[0]); const meridian = timeParts[3]; if (meridian === 'PM' && hour !== 12) hour += 12; if (meridian === 'AM' && hour === 12) hour = 0; const hour24 = hour;
-          const getHourLetter = h24 => String.fromCharCode(65 + h24); const hourId = getHourLetter(hour24);
-          const minId = Math.floor(globalIndex / 4) % 60; const slotLetter = ['a', 'b', 'c', 'd'][globalIndex % 4]; const uid = `${hourId}${minId.toString().padStart(2,'0')}${slotLetter}`;
-
-          allNewSlotsForThisDay.push({
-            ...scheduleEntry,
-            slotIndexNumber: globalIndex + 1,
-            slotStartTime: timeString,
-            slotDate: targetDate, // Use the Date object
-            slotType: determinedSlotType,
-            hourId, minId, slotId: slotLetter, uid,
-            clientId: scheduleEntry.clientId ? new mongoose.Types.ObjectId(scheduleEntry.clientId) : null,
-            campaignId: scheduleEntry.campaignId ? new mongoose.Types.ObjectId(scheduleEntry.campaignId) : null,
-            locationId: scheduleEntry.locationId ? new mongoose.Types.ObjectId(scheduleEntry.locationId) : null,
-            campaignBookingId: scheduleEntry.campaignBookingId ? new mongoose.Types.ObjectId(scheduleEntry.campaignBookingId) : null,
-          });
-        }
-      }
-
-      // Now, update the database for this specific day
-      if (allNewSlotsForThisDay.length > 0) {
-        console.log(`PHASE 1: [Date: ${dateStr}] Total new 'Reserved' slots to store: ${allNewSlotsForThisDay.length}.`);
-        try {
-          // First, delete ALL old 'Reserved' slots for this day to ensure a clean slate
-          const deleteResult = await slotInstanceModels.deleteMany({
-            slotDate: targetDate,
-            status: 'Reserved'
-          });
-          console.log(`PHASE 1: [Date: ${dateStr}] Deleted ${deleteResult.deletedCount} old 'Reserved' slots.`);
-
-          // Then, insert all the newly calculated 'Reserved' slots
-          await slotInstanceModels.insertMany(allNewSlotsForThisDay, { ordered: false });
-          console.log(`PHASE 1: [Date: ${dateStr}] Successfully stored ${allNewSlotsForThisDay.length} new 'Reserved' slots.`);
-        } catch (e) {
-          console.error(`PHASE 1: [Date: ${dateStr}] Error storing reserved slots:`, e.message, e.stack);
-        }
-      } else {
-        console.log(`PHASE 1: [Date: ${dateStr}] No new 'Reserved' slots were placed. It might be full or no pending campaigns were processed.`);
-        // Also ensure no old reservations are left if none were placed now.
-         await slotInstanceModels.deleteMany({
-            slotDate: targetDate,
-            status: 'Reserved'
-          });
-      }
-    }
-    console.log("PHASE 1: Finished proactive generation for all Pending campaigns.");
-    // --- End of Phase 1 ---
-
-
     // --- Phase 2: Generate schedule for the primaryTargetDateStr ---
-    console.log(`\nPHASE 2: Generating schedule for primary target date: ${primaryTargetDateStr}`);
-    // ... (The rest of your Phase 2 code remains the same and will work correctly)
-    // Fetch users for the primary target date (Approved and Pending that are active on this day)
     const usersToProcessForPrimaryDate = await dataUserModels.find({
-        status: { $in: ['Approved', 'Pending'] },
-      })
+      status: { $in: ['Approved', 'Pending'] },
+    })
       .populate('clientId', 'fullName email role')
       .populate('timeslot', 'name amount campaignName')
       .populate('locationId', 'location address');
 
-    console.log(`PHASE 2: Found ${usersToProcessForPrimaryDate.length} users to process for primary date ${primaryTargetDateStr}.`);
     const groupedByLocation = new Map();
 
     for (const user of usersToProcessForPrimaryDate) {
-      const userLogId = user._id.toString();
-      // console.log(`PHASE 2: Processing user ${userLogId} for primary date.`);
-      const userDetails = user.clientId;
-      if (!userDetails) { /*console.log(`PHASE 2: Skipping user ${userLogId} - no clientId.`);*/ continue; }
-      const location = user.locationId;
       const duration = parseInt(user.duration) || 0;
-      const normalSlotsCount = parseInt(user.normalSlots) || 0;
-      const peakSlotsCount = parseInt(user.peakSlots) || 0;
+      if (duration === 0) continue;
 
-      if (duration === 0 || !location?._id || (normalSlotsCount === 0 && peakSlotsCount === 0)) {
-        // console.log(`PHASE 2: Skipping user ${userLogId} - zero duration/slots or no locationId._id.`);
-        continue;
+      let campaignSlotStartDateStr;
+      if (user.status === 'Approved' && user.slotStartDate) {
+        campaignSlotStartDateStr = new Date(user.slotStartDate).toISOString().split('T')[0];
+      } else {
+        const campaignActivityDate = new Date(user.createdAt);
+        campaignActivityDate.setUTCHours(0, 0, 0, 0);
+        campaignSlotStartDateStr = getDateOffset(campaignActivityDate, 1);
       }
-
-      const campaignActivityDate = new Date(user.updatedAt);
-      campaignActivityDate.setHours(0, 0, 0, 0);
-      const campaignSlotStartDate = getDateOffset(campaignActivityDate, 0);
 
       let campaignIsActiveOnPrimaryTargetDate = false;
       for (let dayOffset = 0; dayOffset < duration; dayOffset++) {
-        const intendedSlotDateForCampaignDay = getDateOffset(campaignSlotStartDate, dayOffset);
+        const intendedSlotDateForCampaignDay = getDateOffset(campaignSlotStartDateStr, dayOffset);
         if (intendedSlotDateForCampaignDay === primaryTargetDateStr) {
           campaignIsActiveOnPrimaryTargetDate = true;
           break;
         }
       }
 
-      if (!campaignIsActiveOnPrimaryTargetDate) {
-        // console.log(`PHASE 2: Skipping user ${userLogId} - campaign not active on ${primaryTargetDateStr}.`);
-        continue;
-      }
-      // console.log(`PHASE 2: User ${userLogId} IS active on ${primaryTargetDateStr}. Status: ${user.status}`);
+      if (!campaignIsActiveOnPrimaryTargetDate) continue;
 
-      const locId = location._id.toString();
-      const userIdStr = userDetails._id.toString();
+      const locId = user.locationId?._id.toString();
+      if (!locId) continue;
 
       if (!groupedByLocation.has(locId)) {
         groupedByLocation.set(locId, {
-          userDetailsMap: new Map(),
-          locationMeta: { location: location?.location || 'N/A', locationAddress: location?.address || 'N/A', locationId: locId }
+          campaignBookingsMap: new Map(),
+          locationMeta: {
+            location: user.locationId?.location || 'N/A',
+            locationAddress: user.locationId?.address || 'N/A',
+            locationId: locId
+          }
         });
       }
-      const locationEntry = groupedByLocation.get(locId);
-      if (!locationEntry.userDetailsMap.has(userIdStr)) {
-        locationEntry.userDetailsMap.set(userIdStr, {
-          userRecord: user,
-          campaignStatus: user.status,
-          slotsRequestedForTargetDate: { normal: [], peak: [] },
-          actualAssignedTimesOnTargetDate: [],
-          commonInfoBase: null
-        });
-      }
-      const userBookingContainer = locationEntry.userDetailsMap.get(userIdStr);
-      const commonInfoBaseForPrimaryDate = {
-          clientId: userDetails._id, campaignBookingId: user._id, fullName: userDetails.fullName || 'N/A',
-          email: userDetails.email || 'N/A', role: userDetails.role || 'N/A',
-          status: user.status === 'Approved' ? 'Booked' : 'Reserved',
-          createdAt: user.createdAt, updatedAt: user.updatedAt, duration, totalSlots: Number(user.totalSlots), peakSlots: peakSlotsCount, normalSlots: normalSlotsCount,
-          estimateReach: user.estimateReach, totalBudgets: user.totalBudgets,
-          campaignName: user.content || user.timeslot?.campaignName || 'N/A',
-          campaignId: user.timeslot?._id || null, timeslotName: user.timeslot?.name || 'N/A',
-          amount: user.timeslot?.amount || 'N/A', mediaFile: user.mediaFile, url: user.url,
-          location: location.location, locationAddress: location.address, locationId: locId,
-          campaignStatus: user.status
-      };
-      userBookingContainer.commonInfoBase = commonInfoBaseForPrimaryDate;
 
-      for (let i = 0; i < normalSlotsCount; i++) {
-        userBookingContainer.slotsRequestedForTargetDate.normal.push({ ...commonInfoBaseForPrimaryDate, slotType: 'Normal' });
-      }
-      for (let i = 0; i < peakSlotsCount; i++) {
-        userBookingContainer.slotsRequestedForTargetDate.peak.push({ ...commonInfoBaseForPrimaryDate, slotType: 'Peak' });
-      }
+      const locationEntry = groupedByLocation.get(locId);
+      const campaignBookingId = user._id.toString();
+
+      const normalSlotsCount = parseInt(user.normalSlots) || 0;
+      const peakSlotsCount = parseInt(user.peakSlots) || 0;
+
+      const campaignContainer = {
+        userRecord: user.toObject(),
+        slotsRequestedForTargetDate: { normal: [], peak: [] },
+        actualAssignedTimesOnTargetDate: []
+      };
+
+      // +++++++++++++++++++++++++++++++++++++++++++++++++++++++
+      // +++                THIS IS THE FIX                    +++
+      // +++++++++++++++++++++++++++++++++++++++++++++++++++++++
+      const commonInfoBase = {
+        clientId: user.clientId?._id,
+        campaignBookingId: user._id,
+        fullName: user.clientId?.fullName,
+        status: user.status === 'Approved' ? 'Booked' : 'Reserved',
+        campaignName: user.content,
+        locationId: locId,
+        location: user.locationId?.location || 'N/A',
+        locationAddress: user.locationId?.address || 'N/A',
+        campaignStatus: user.status,
+        
+        // ADD THIS LINE TO CARRY THE MEDIA FILE URL
+        mediaFile: user.mediaFile, 
+      };
+
+      for (let i = 0; i < normalSlotsCount; i++) campaignContainer.slotsRequestedForTargetDate.normal.push({ ...commonInfoBase, slotType: 'Normal' });
+      for (let i = 0; i < peakSlotsCount; i++) campaignContainer.slotsRequestedForTargetDate.peak.push({ ...commonInfoBase, slotType: 'Peak' });
+
+      locationEntry.campaignBookingsMap.set(campaignBookingId, campaignContainer);
     }
 
-
-    const allLocations = await locationModels.find({}, '_id location address');
+    // --- The rest of the function remains exactly the same ---
+    const finalSlotInstancesForAllLocations = [];
+    const allLocations = await locationModels.find({}, '_id location address').lean();
     for (const loc of allLocations) {
       const locId = loc._id.toString();
       if (!groupedByLocation.has(locId)) {
         groupedByLocation.set(locId, {
-          userDetailsMap: new Map(),
-          locationMeta: { location: loc.location || 'N/A', locationAddress: loc.address || 'N/A', locationId: locId }
+          campaignBookingsMap: new Map(),
+          locationMeta: { location: loc.location, locationAddress: loc.address, locationId: locId }
         });
       }
     }
-
     const latestMedia = await MediaUrl.findOne().sort({ createdAt: -1 });
-    let lastUploadedMediaUrl = '-';
-    if (latestMedia) {
-      if (latestMedia.url) lastUploadedMediaUrl = latestMedia.url;
-      else if (latestMedia.media?.filename) lastUploadedMediaUrl = `/uploads/${latestMedia.media.filename}`;
-    }
 
-
-    const finalSlotInstancesForPrimaryDate = [];
-
-    for (const [locId, { userDetailsMap, locationMeta }] of groupedByLocation.entries()) {
+    for (const [locId, { campaignBookingsMap, locationMeta }] of groupedByLocation.entries()) {
       const dailyScheduleForPrimaryDate = new Array(TOTAL_SLOTS_PER_DAY).fill(null);
-
-      const sortedUserBookings = Array.from(userDetailsMap.values())
-        .filter(ubc => ubc.userRecord)
+      const sortedCampaignBookings = Array.from(campaignBookingsMap.values())
         .sort((a, b) => new Date(a.userRecord.createdAt) - new Date(b.userRecord.createdAt));
 
-      let normalUserProcessingOrder = 0;
-      let peakUserProcessingOrder = 0;
-
-      for (const userBooking of sortedUserBookings) {
-        if (userBooking.slotsRequestedForTargetDate.normal.length > 0) {
-          // console.log(`PHASE 2: Distributing NORMAL slots for ${userBooking.commonInfoBase.campaignName} (UserOrder: ${normalUserProcessingOrder})`);
-          distributeSlotsForUser(dailyScheduleForPrimaryDate, userBooking.slotsRequestedForTargetDate.normal, 'Normal', normalUserProcessingOrder++, getSlotTimeInfoByIndexGlobal);
-          userBooking.slotsRequestedForTargetDate.normal.forEach(req => {
-            if (req.assignedGlobalIndex !== undefined) userBooking.actualAssignedTimesOnTargetDate.push(getSlotTimeInfoByIndexGlobal(req.assignedGlobalIndex + 1).timeString);
-          });
+      let userProcessingOrder = 0;
+      for (const campaignBooking of sortedCampaignBookings) {
+        if (campaignBooking.slotsRequestedForTargetDate.normal.length > 0) {
+          distributeSlotsForUser(dailyScheduleForPrimaryDate, campaignBooking.slotsRequestedForTargetDate.normal, 'Normal', userProcessingOrder);
         }
-        if (userBooking.slotsRequestedForTargetDate.peak.length > 0) {
-          // console.log(`PHASE 2: Distributing PEAK slots for ${userBooking.commonInfoBase.campaignName} (UserOrder: ${peakUserProcessingOrder})`);
-          distributeSlotsForUser(dailyScheduleForPrimaryDate, userBooking.slotsRequestedForTargetDate.peak, 'Peak', peakUserProcessingOrder++, getSlotTimeInfoByIndexGlobal);
-           userBooking.slotsRequestedForTargetDate.peak.forEach(req => {
-            if (req.assignedGlobalIndex !== undefined) userBooking.actualAssignedTimesOnTargetDate.push(getSlotTimeInfoByIndexGlobal(req.assignedGlobalIndex + 1).timeString);
-          });
+        if (campaignBooking.slotsRequestedForTargetDate.peak.length > 0) {
+          distributeSlotsForUser(dailyScheduleForPrimaryDate, campaignBooking.slotsRequestedForTargetDate.peak, 'Peak', userProcessingOrder);
         }
+        userProcessingOrder++;
       }
 
-      for (let globalIndex = 0; globalIndex < TOTAL_SLOTS_PER_DAY; globalIndex++) {
-        const slotIndexNumber = globalIndex + 1;
+      for (let i = 0; i < TOTAL_SLOTS_PER_DAY; i++) {
+        const slotIndexNumber = i + 1;
         const { timeString, slotDateTime } = getSlotTimeInfoByIndexGlobal(slotIndexNumber);
-        let slotEntry = dailyScheduleForPrimaryDate[globalIndex];
-        let finalSlotType;
+        const finalSlotType = getSlotTypeByTimeGlobal(slotDateTime);
+        let slotEntry = dailyScheduleForPrimaryDate[i];
 
-        if (slotEntry) {
-            finalSlotType = slotEntry.slotType || getSlotTypeByTimeGlobal(slotDateTime); // Ensure slotType is from entry or calculated
-            // status is already in slotEntry
-        } else {
-            finalSlotType = getSlotTypeByTimeGlobal(slotDateTime);
-            slotEntry = {
-                clientId: null, fullName: '-', email: '-', role: '-', status: 'Available',
-                mediaFile: lastUploadedMediaUrl, duration: null, createdAt: new Date(), updatedAt: new Date(),
-                campaignName: '-', campaignId: null, campaignBookingId: null,
-                location: locationMeta.location, locationAddress: locationMeta.locationAddress,
-                locationId: locationMeta.locationId,
-            };
+        // This if-block handles 'Available' slots. 
+        // Notice it sets its OWN mediaFile. This is correct.
+        if (!slotEntry) {
+          slotEntry = {
+            status: 'Available',
+            mediaFile: latestMedia?.url || '-', // Fallback media for available slots
+            fullName: '-', campaignName: '-',
+            location: locationMeta.location,
+            locationAddress: locationMeta.locationAddress,
+            locationId: locationMeta.locationId,
+          };
         }
-        const timeParts = timeString.split(/[: ]/); let hour = parseInt(timeParts[0]); const meridian = timeParts[3]; if (meridian === 'PM' && hour !== 12) hour += 12; if (meridian === 'AM' && hour === 12) hour = 0; const hour24 = hour;
-        const getHourLetter = h24 => String.fromCharCode(65 + h24); const hourId = getHourLetter(hour24);
-        const minId = Math.floor(globalIndex / 4) % 60; const slotLetter = ['a', 'b', 'c', 'd'][globalIndex % 4]; const uid = `${hourId}${minId.toString().padStart(2,'0')}${slotLetter}`;
+        
+        // For Booked/Reserved slots, the mediaFile is already part of slotEntry
+        // from the commonInfoBase object.
 
-        finalSlotInstancesForPrimaryDate.push({
-            ...slotEntry,
-            slotIndexNumber, slotStartTime: timeString, slotDate: primaryTargetDateStr,
-            slotType: finalSlotType, hourId, minId, slotId: slotLetter, uid,
+        const hour24 = slotDateTime.getUTCHours();
+        const hourId = String.fromCharCode(65 + hour24);
+        const minId = Math.floor(i / 4) % 60;
+        const slotLetter = ['a', 'b', 'c', 'd'][i % 4];
+        const uid = `${hourId}${minId.toString().padStart(2, '0')}${slotLetter}`;
+
+        finalSlotInstancesForAllLocations.push({
+          ...slotEntry,
+          slotIndexNumber,
+          slotStartTime: timeString,
+          slotDate: primaryTargetDateStr,
+          slotType: finalSlotType,
+          hourId,
+          minId,
+          slotId: slotLetter,
+          uid,
         });
       }
     }
 
-    for (const [locId, { userDetailsMap }] of groupedByLocation.entries()) {
-        for (const [userIdStr, userBookingContainer] of userDetailsMap.entries()) {
-            if (userBookingContainer.actualAssignedTimesOnTargetDate && userBookingContainer.actualAssignedTimesOnTargetDate.length > 0 && userBookingContainer.userRecord) {
-                const sortedTimes = userBookingContainer.actualAssignedTimesOnTargetDate.sort();
-                // console.log(`PHASE 2: Updating slotStartTimes for user ${userBookingContainer.userRecord._id} on ${primaryTargetDateStr} with ${sortedTimes.length} slots.`);
-                await dataUserModels.findByIdAndUpdate(userBookingContainer.userRecord._id, {
-                    // Using $set to create/update the specific date field and the general slotStartTimes
-                    $set: {
-                        [`slotDetails.${primaryTargetDateStr.replace(/-/g, '_')}`]: sortedTimes,
-                        slotStartTimes: sortedTimes // This will be overwritten daily by this logic, consider if this is desired
-                    }
-                });
-            }
-        }
+    // --- DB Operations ---
+    await slotInstanceModels.deleteMany({ slotDate: primaryTargetDate });
+    if (finalSlotInstancesForAllLocations.length > 0) {
+      const slotsToInsert = finalSlotInstancesForAllLocations.map(slot => {
+        const slotDoc = { ...slot, slotDate: primaryTargetDate };
+        delete slotDoc.assignedGlobalIndex;
+        delete slotDoc.campaignStatus;
+        return slotDoc;
+      });
+      await slotInstanceModels.insertMany(slotsToInsert, { ordered: false });
     }
-
-    console.log(`PHASE 2: Generated ${finalSlotInstancesForPrimaryDate.length} slot instances for primary date ${primaryTargetDateStr}.`);
-
-    console.log(`PHASE 2: Deleting existing slot instances for ${primaryTargetDateStr} before insert.`);
-    await slotInstanceModels.deleteMany({
-      slotDate: new Date(primaryTargetDateStr)
-    });
-    console.log(`PHASE 2: Deletion for ${primaryTargetDateStr} complete.`);
-
-
-    const slotsToInsertForPrimaryDate = finalSlotInstancesForPrimaryDate.map(slot => {
-      const slotDateObj = new Date(slot.slotDate);
-      slotDateObj.setUTCHours(0, 0, 0, 0);
-      const slotDoc = {
-          ...slot, slotDate: slotDateObj,
-          campaignBookingId: slot.campaignBookingId ? new mongoose.Types.ObjectId(slot.campaignBookingId) : null,
-          createdAt: slot.createdAt instanceof Date ? slot.createdAt : new Date(slot.createdAt || Date.now()),
-          updatedAt: slot.updatedAt instanceof Date ? slot.updatedAt : new Date(slot.updatedAt || Date.now()),
-          clientId: slot.clientId ? new mongoose.Types.ObjectId(slot.clientId) : null,
-          campaignId: slot.campaignId ? new mongoose.Types.ObjectId(slot.campaignId) : null,
-          locationId: slot.locationId ? new mongoose.Types.ObjectId(slot.locationId) : null,
-      };
-      delete slotDoc.actualAssignedGlobalIndex;
-      delete slotDoc.campaignStatus; // This was temporary for logic, not for DB
-      return slotDoc;
-    });
-
-    if (slotsToInsertForPrimaryDate.length > 0) {
-      try {
-        const batchSize = 500;
-        for (let i = 0; i < slotsToInsertForPrimaryDate.length; i += batchSize) {
-            const batch = slotsToInsertForPrimaryDate.slice(i, i + batchSize);
-            await slotInstanceModels.insertMany(batch, { ordered: false });
-        }
-        console.log(`PHASE 2: Successfully stored ${slotsToInsertForPrimaryDate.length} slots for primary date ${primaryTargetDateStr}`);
-      } catch (insertError) {
-          console.error(`PHASE 2: Error inserting slots for primary date ${primaryTargetDateStr}:`, insertError.message, insertError.stack);
-          if (insertError.writeErrors) {
-            insertError.writeErrors.forEach(err => console.error('Failed doc op:', err.err.op ? JSON.stringify(err.err.op) : err.err.errmsg));
-          }
-      }
-    } else {
-      console.log(`PHASE 2: No slots to insert for primary date ${primaryTargetDateStr}.`);
-    }
-
-    const verifyCountPrimaryDate = await slotInstanceModels.countDocuments({
-      slotDate: new Date(primaryTargetDateStr)
-    });
-    console.log(`PHASE 2: Verified slots in DB for ${primaryTargetDateStr}: ${verifyCountPrimaryDate}`);
 
     res.status(200).json({
       success: true,
       date: primaryTargetDateStr,
-      totalSlotInstances: finalSlotInstancesForPrimaryDate.length,
-      slots: finalSlotInstancesForPrimaryDate,
-      storedCount: verifyCountPrimaryDate
+      totalSlotInstances: finalSlotInstancesForAllLocations.length,
+      slots: finalSlotInstancesForAllLocations,
     });
 
   } catch (error) {
-    console.error('GLOBAL ERROR in getAllSlotInstances:', error.message, error.stack);
+    console.error('GLOBAL ERROR in getAllSlotInstances:', error);
     res.status(500).json({ success: false, message: 'Server Error', error: error.message });
   }
 };
+
 
 // The getReservedSlotsForCampaign function remains unchanged.
 // Ensure it's exported if it's in the same file or imported correctly.
@@ -2007,14 +1616,14 @@ exports.getReservedSlotsForCampaign = async (req, res) => {
 
     let effectiveStatus = 'Reserved'; // Default
     if (status) {
-        const statuses = status.split(',').map(s => s.trim());
-        if (statuses.some(s => !['Reserved', 'Booked', 'Available'].includes(s))) {
-             return res.status(400).json({ success: false, message: 'Invalid status value provided.' });
-        }
-        query.status = { $in: statuses };
-        effectiveStatus = statuses.join('/'); // For message
+      const statuses = status.split(',').map(s => s.trim());
+      if (statuses.some(s => !['Reserved', 'Booked', 'Available'].includes(s))) {
+        return res.status(400).json({ success: false, message: 'Invalid status value provided.' });
+      }
+      query.status = { $in: statuses };
+      effectiveStatus = statuses.join('/'); // For message
     } else {
-        query.status = 'Reserved';
+      query.status = 'Reserved';
     }
 
     if (date) {
@@ -2059,7 +1668,7 @@ exports.getReservedSlotsForCampaign = async (req, res) => {
     res.status(500).json({ success: false, message: 'Server Error', error: error.message });
   }
 };
- 
+
 
 
 
@@ -2273,115 +1882,143 @@ exports.getUserSlotDetails = async (req, res) => {
 
     // 1. Fetch the Campaign Booking (dataUserModel) with populated details
     const campaignBooking = await dataUserModels.findById(campaignBookingId)
-      .populate('clientId', 'fullName email role')     // Populate client (user) details
-      .populate('timeslot', 'name amount campaignName') // Populate timeslot type details
-      .populate('locationId', 'location address')     // Populate campaign's primary location
-      .lean(); // Use .lean() for performance as we are only reading
+      .populate('clientId', 'fullName email role')
+      .populate('timeslot', 'name amount campaignName')
+      .populate('locationId', 'location address')
+      .lean();
 
     if (!campaignBooking) {
       console.log(`[getUserSlotDetails] Error: Campaign booking not found for ID: ${campaignBookingId}`);
       return res.status(404).json({ success: false, message: "Campaign booking not found." });
     }
-    console.log(`[getUserSlotDetails] Found campaignBooking: Name: ${campaignBooking.content || campaignBooking.timeslot?.campaignName || 'N/A'}, Status: ${campaignBooking.status}`);
 
-    // 2. Check if the campaign is 'Approved'. This endpoint is for details of approved campaigns' slots.
-    if (campaignBooking.status !== 'Approved') {
-        console.log(`[getUserSlotDetails] Campaign ${campaignBookingId} status is ${campaignBooking.status}, not 'Approved'.`);
-        return res.status(200).json({ // 200 OK is fine, just returning info that it's not approved for this specific view
-            success: true,
-            message: `Campaign status is '${campaignBooking.status}'. This endpoint is intended for 'Approved' campaigns to show their booked slots. For 'Pending' campaigns, use an endpoint that shows 'Reserved' slots.`,
-            campaignDetails: {
-                id: campaignBooking._id,
-                name: campaignBooking.content || campaignBooking.timeslot?.campaignName || 'N/A',
-                status: campaignBooking.status,
-                clientName: campaignBooking.clientId?.fullName || 'N/A', // Safely access populated field
-            },
-            slots: [] // No 'Booked' slots to show if not approved
-        });
+    // 2. Calculate the date range for the campaign
+    const duration = parseInt(campaignBooking.duration) || 0;
+    let startDate, endDate;
+    
+    if (campaignBooking.status === 'Approved' && campaignBooking.slotStartDate) {
+      startDate = new Date(campaignBooking.slotStartDate);
+    } else {
+      startDate = new Date(campaignBooking.createdAt);
+      startDate.setDate(startDate.getDate() + 1);
     }
+    
+    startDate.setUTCHours(0, 0, 0, 0);
+    endDate = new Date(startDate);
+    endDate.setDate(endDate.getDate() + duration - 1);
+    endDate.setUTCHours(23, 59, 59, 999);
 
-    // 3. Fetch all 'Booked' slot instances associated with this campaignBookingId
+    // 3. Fetch all slot instances for this campaign within the date range
     const queryConditions = {
       campaignBookingId: new mongoose.Types.ObjectId(campaignBookingId),
-      // Optionally, ensure clientId matches if there's any chance of mismatch, though campaignBookingId should be unique.
-      // clientId: campaignBooking.clientId?._id,
-      status: 'Booked' // Specifically fetching 'Booked' slots
+      slotDate: { $gte: startDate, $lte: endDate },
+      status: campaignBooking.status === 'Approved' ? 'Booked' : 'Reserved'
     };
-    console.log("[getUserSlotDetails] Querying slotInstanceModels with conditions:", JSON.stringify(queryConditions));
 
-    const bookedSlotsFromDB = await slotInstanceModels.find(queryConditions)
-      .sort({ slotDate: 1, slotStartTime: 1 }) // Order by date, then by start time
-      .populate('locationId', 'location address') // Populate slot's specific location details
+    const slotsFromDB = await slotInstanceModels.find(queryConditions)
+      .populate('locationId', 'location address')
       .lean();
 
-    console.log(`[getUserSlotDetails] Found ${bookedSlotsFromDB.length} 'Booked' slots from DB for this campaign.`);
+    // 4. Convert time to 24-hour format for proper sorting and sort slots
+    const sortedSlots = slotsFromDB.map(slot => {
+      // Convert time to 24-hour format for sorting
+      let time24 = convertTo24Hour(slot.slotStartTime);
+      return {
+        ...slot,
+        sortableTime: time24
+      };
+    }).sort((a, b) => {
+      // First compare dates
+      const dateCompare = new Date(a.slotDate).getTime() - new Date(b.slotDate).getTime();
+      if (dateCompare !== 0) return dateCompare;
+      
+      // If same date, compare times
+      return a.sortableTime.localeCompare(b.sortableTime);
+    });
 
-    // 4. Format the fetched slots for the response
-    const formattedSlots = bookedSlotsFromDB.map(slot => {
-      // All necessary details (uid, hourId, etc.) should be on the `slot` object
-      // if `slotInstanceModels` is populated correctly by your slot generation logic.
+    // Helper function to convert time to 24-hour format
+    function convertTo24Hour(timeStr) {
+      if (!timeStr) return '00:00';
+      
+      // Check if already in 24-hour format (contains 'AM' or 'PM')
+      if (timeStr.includes('AM') || timeStr.includes('PM')) {
+        const [time, period] = timeStr.split(' ');
+        let [hours, minutes] = time.split(':');
+        
+        hours = parseInt(hours);
+        minutes = minutes || '00';
+        
+        if (period === 'PM' && hours < 12) hours += 12;
+        if (period === 'AM' && hours === 12) hours = 0;
+        
+        return `${hours.toString().padStart(2, '0')}:${minutes}`;
+      }
+      
+      // If already in 24-hour format, just return it
+      return timeStr;
+    }
+
+    // 5. Format the sorted slots for the response
+    const formattedSlots = sortedSlots.map(slot => {
       return {
         slotInstanceId: slot._id,
-        slotDate: slot.slotDate.toISOString().split('T')[0], // Format date as YYYY-MM-DD
+        slotDate: slot.slotDate.toISOString().split('T')[0],
         slotStartTime: slot.slotStartTime,
-        slotIndexNumber: slot.slotIndexNumber, // The overall index of the slot in a day (1 to TOTAL_SLOTS_PER_DAY)
-        slotType: slot.slotType, // 'Normal' or 'Peak'
-        status: slot.status,     // Should be 'Booked'
+        slotIndexNumber: slot.slotIndexNumber,
+        slotType: slot.slotType,
+        status: slot.status,
         mediaFile: slot.mediaFile,
         url: slot.url,
-        uid: slot.uid,           // Unique ID for the slot within a day (e.g., H00a)
-        hourId: slot.hourId,     // Identifier for the hour block (e.g., H)
-        minId: slot.minId,       // Identifier for the minute block (e.g., 00)
-        slotId: slot.slotId,     // Identifier for the 15-sec sub-slot (e.g., a)
-        location: slot.locationId ? { // Location information from the slot instance
+        uid: slot.uid,
+        hourId: slot.hourId,
+        minId: slot.minId,
+        slotId: slot.slotId,
+        location: slot.locationId ? {
           id: slot.locationId._id,
           name: slot.locationId.location,
           address: slot.locationId.address,
-        } : ( // Fallback to campaign's location if slot's locationId wasn't populated (it should be)
-            campaignBooking.locationId ? {
-                id: campaignBooking.locationId._id,
-                name: campaignBooking.locationId.location,
-                address: campaignBooking.locationId.address,
-            } : null
-        ),
-        // campaignNameOnSlot: slot.campaignName, // The campaign name stored directly on the slot instance at the time of booking
+        } : (campaignBooking.locationId ? {
+          id: campaignBooking.locationId._id,
+          name: campaignBooking.locationId.location,
+          address: campaignBooking.locationId.address,
+        } : null),
       };
     });
 
-    // 5. Construct the final response payload
+    // 6. Construct the final response payload
     const responsePayload = {
       success: true,
       campaignDetails: {
         id: campaignBooking._id,
         campaignName: campaignBooking.content || campaignBooking.timeslot?.campaignName || 'N/A',
-        status: campaignBooking.status, // Should be 'Approved'
-        duration: campaignBooking.duration, // e.g., "7 days" or 7
-        totalSlotsInCampaign: campaignBooking.totalSlots, // As defined in the campaign booking
+        status: campaignBooking.status,
+        duration: campaignBooking.duration,
+        totalSlotsInCampaign: campaignBooking.totalSlots,
         normalSlotsInCampaign: campaignBooking.normalSlots,
         peakSlotsInCampaign: campaignBooking.peakSlots,
+        campaignStartDate: startDate.toISOString().split('T')[0],
+        campaignEndDate: endDate.toISOString().split('T')[0],
         createdAt: campaignBooking.createdAt.toISOString(),
-        updatedAt: campaignBooking.updatedAt.toISOString(), // This would be the approval date
-        timeslotType: campaignBooking.timeslot ? { // Details of the type of timeslot/package
-            name: campaignBooking.timeslot.name,
-            amount: campaignBooking.timeslot.amount,
-            // campaignNameOnType: campaignBooking.timeslot.campaignName // if this field exists on your timeslot type model
+        updatedAt: campaignBooking.updatedAt.toISOString(),
+        timeslotType: campaignBooking.timeslot ? {
+          name: campaignBooking.timeslot.name,
+          amount: campaignBooking.timeslot.amount,
         } : null,
-        campaignLocation: campaignBooking.locationId ? { // Primary location of the campaign
-            id: campaignBooking.locationId._id,
-            name: campaignBooking.locationId.location,
-            address: campaignBooking.locationId.address,
+        campaignLocation: campaignBooking.locationId ? {
+          id: campaignBooking.locationId._id,
+          name: campaignBooking.locationId.location,
+          address: campaignBooking.locationId.address,
         } : null,
       },
-      clientDetails: campaignBooking.clientId ? { // Details of the user/client who owns the campaign
+      clientDetails: campaignBooking.clientId ? {
         id: campaignBooking.clientId._id,
         fullName: campaignBooking.clientId.fullName,
         email: campaignBooking.clientId.email,
         role: campaignBooking.clientId.role,
       } : null,
-      totalBookedSlotsFound: formattedSlots.length,
-      slots: formattedSlots // The array of detailed booked slot information
+      totalSlotsFound: formattedSlots.length,
+      slots: formattedSlots
     };
-    console.log("[getUserSlotDetails] Sending response payload.");
 
     res.status(200).json(responsePayload);
 
@@ -2715,4 +2352,71 @@ exports.getAllMedia = async (req, res) => {
     console.error(err);
     res.status(500).json({ error: "Server error" });
   }
+};
+
+
+exports.getPaymentReport = async (req, res) => {
+    try {
+        const { search = '' } = req.query;
+        let filterQuery = {}; // This will hold our search filter if provided
+
+        // --- Step 1: Handle optional search functionality (same as your original API) ---
+        if (search) {
+            // Find users whose fullName matches the search term (case-insensitive)
+            const matchedUsers = await UserData.find({ fullName: { $regex: search, $options: 'i' } }).select('_id');
+
+            if (matchedUsers.length > 0) {
+                const userIds = matchedUsers.map(user => user._id);
+                // Add a filter to the query to only find campaigns from these users
+                filterQuery.clientId = { $in: userIds };
+            } else {
+                // If no users match the search, return an empty report immediately
+                return res.status(200).json({
+                    message: "No users found matching the search criteria.",
+                    totalRecords: 0,
+                    totalBudgetSum: 0,
+                    data: []
+                });
+            }
+        }
+
+        // --- Step 2: Fetch the core data using the filter ---
+        // We still need to populate to get the details from other collections
+        const campaigns = await UserData.find(filterQuery)
+            .populate('clientId', 'fullName phone') // Get fullName and phone from User model
+            .populate('locationId', 'location')   // Get location from Location model
+            .sort({ createdAt: -1 });
+
+        // --- Step 3: Calculate the total budget and format the response data ---
+        let totalBudgetSum = 0;
+
+        const reportData = campaigns.map(campaign => {
+            // Add the campaign's budget to our running total.
+            // Using Number() ensures that even if totalBudgets is a string, it's treated as a number for the sum.
+            totalBudgetSum += Number(campaign.totalBudgets) || 0;
+
+            // Return a new, clean object with only the fields you need.
+            return {
+                _id: campaign._id, // It's good practice to include the document ID
+                fullName: campaign.clientId ? campaign.clientId.fullName : 'N/A',
+                phone: campaign.clientId ? campaign.clientId.phone : 'N/A',
+                location: campaign.locationId ? campaign.locationId.location : 'N/A',
+                status: campaign.status,
+                totalBudgets: campaign.totalBudgets,
+                createdAt: campaign.createdAt // The campaign creation date is often useful in reports
+            };
+        });
+
+        // --- Step 4: Send the final, structured response ---
+        res.status(200).json({
+            message: "Payment report generated successfully",
+            totalRecords: reportData.length, // The number of campaigns/records found
+            totalBudgetSum: totalBudgetSum,  // The calculated sum of all budgets
+            data: reportData                 // The formatted list of records
+        });
+
+    } catch (error) {
+        console.error("Error generating payment report:", error);
+        res.status(500).json({ message: 'Error generating payment report', error: error.message });
+    }
 };
