@@ -99,19 +99,24 @@ const bcrypt = require("bcrypt")
 
 const register = async (req, res) => {
     console.log("Request Body: ", req.body);
-    const { fullName, phone, email, businessName, password } = req.body;
+    let { fullName, phone, email, businessName, password } = req.body;
+
+    if (phone) {
+        phone = phone.replace(/\D/g, '');
+    }
 
     if (!fullName || !phone || !email || !businessName || !password) {
         return res.status(400).json({ msg: 'Please provide all required fields' });
     }
 
+
     try {
         // Check if user already exists
         let user = await User.findOne({ $or: [{ email }, { phone }] });
         if (user) {
-            return res.status(400).json({ 
-                message: 'User with this email or phone already exists', 
-                errorCode: 'USER_EXISTS' 
+            return res.status(400).json({
+                message: 'User with this email or phone already exists',
+                errorCode: 'USER_EXISTS'
             });
         }
 
@@ -120,10 +125,10 @@ const register = async (req, res) => {
         const hashedPassword = await bcrypt.hash(password, salt);
 
         // Create new user with hashed password
-        user = new User({ 
-            fullName, 
-            phone, 
-            email, 
+        user = new User({
+            fullName,
+            phone,
+            email,
             businessName,
             password: hashedPassword
         });
@@ -133,41 +138,52 @@ const register = async (req, res) => {
         res.status(201).json({ message: 'User registered successfully' });
     } catch (error) {
         console.error("Server error during user registration:", error.message);
-        res.status(500).json({ 
-            message: 'Server error occurred. Please try again later.', 
-            errorCode: 'SERVER_ERROR' 
+        res.status(500).json({
+            message: 'Server error occurred. Please try again later.',
+            errorCode: 'SERVER_ERROR'
         });
     }
 };
 
 const login = async (req, res) => {
-    const { email, password } = req.body;
+    // Step 1: Use 'identifier' which can be either email or phone
+    const { identifier, password } = req.body;
 
     // Input validation
-    if (!email || !password) {
-        return res.status(400).json({ 
+    if (!identifier || !password) {
+        return res.status(400).json({
             success: false,
-            message: 'Please provide both email and password' 
+            message: 'Please provide an identifier (email or phone) and password'
         });
     }
 
     try {
-        // Find user with password explicitly selected
-        const user = await User.findOne({ email }).select('+password');
-        
+
+        const isPhoneNumber = /^\d{10,}$/.test(identifier);
+        let searchIdentifier = identifier;
+        if (isPhoneNumber) {
+            searchIdentifier = identifier.replace(/\D/g, '');
+        }
+        // Step 2: Use $or to find user by email OR phone
+        // Also, select the password field which is usually hidden
+        const user = await User.findOne({
+            $or: [{ email: identifier }, { phone: identifier }]
+        }).select('+password');
+
+        // If no user is found with that email or phone
         if (!user) {
-            return res.status(401).json({ 
+            return res.status(401).json({
                 success: false,
-                message: 'Invalid credentials' 
+                message: 'Invalid credentials'
             });
         }
 
         // Password comparison
         const isMatch = await bcrypt.compare(password, user.password);
         if (!isMatch) {
-            return res.status(401).json({ 
+            return res.status(401).json({
                 success: false,
-                message: 'Invalid credentials' 
+                message: 'Invalid credentials'
             });
         }
 
@@ -175,10 +191,10 @@ const login = async (req, res) => {
         const token = jwt.sign(
             { id: user._id, role: user.role },
             process.env.JWT_SECRET,
-            { expiresIn: '1h' }
+            { expiresIn: '1d' } // Optional: Add an expiration time
         );
 
-        // Remove password from response
+        // Remove password from the user object before sending the response
         user.password = undefined;
 
         return res.status(200).json({
@@ -196,10 +212,10 @@ const login = async (req, res) => {
 
     } catch (error) {
         console.error("Login Error:", error);
-        return res.status(500).json({ 
+        return res.status(500).json({
             success: false,
             message: "Server error during login",
-            error: error.message 
+            error: error.message
         });
     }
 };
@@ -266,7 +282,7 @@ const getallUser = async (req, res) => {
 const getbyIdUser = async (req, res) => {
     try {
         const { id } = req.params;
-        
+
         // Get user with populated campaigns
         const user = await User.findById(id)
             .populate({
@@ -274,7 +290,7 @@ const getbyIdUser = async (req, res) => {
                 match: { status: 'Rejected' },
                 select: 'totalBudgets status'
             });
-        
+
         if (!user) {
             return res.status(404).json({ message: "User not found" });
         }
@@ -282,7 +298,7 @@ const getbyIdUser = async (req, res) => {
         // Calculate total rejected amount (only from campaigns marked as Rejected)
         let totalRejectedAmount = 0;
         const rejectedCampaigns = user.campaigns.filter(c => c.status === 'Rejected');
-        
+
         rejectedCampaigns.forEach(campaign => {
             totalRejectedAmount += campaign.totalBudgets || 0;
         });
@@ -293,8 +309,8 @@ const getbyIdUser = async (req, res) => {
             await user.save();
         }
 
-        res.status(200).json({ 
-            message: "Fetched Successfully", 
+        res.status(200).json({
+            message: "Fetched Successfully",
             user: {
                 ...user.toObject(),
                 walletAmount: totalRejectedAmount

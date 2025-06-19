@@ -51,9 +51,6 @@ router.get('/peak-slots', timeSlotsController.getPeakSlots);
 router.get('/normal-slots', timeSlotsController.getNormalSlots);
 router.get('/campaigns/:campaignId/reserved-slots', timeSlotsController.getReservedSlotsForCampaign);
 
-
-
-
 // router.get('/approved-users/slots', timeSlotsController.getApprovedUsersWithSlots);
 // router.get('/approved-users/slots', timeSlotsController.getAllApprovedUserSlots);
 // router.get('/peak-hrs/slots', timeSlotsController.getPeakSlots);
@@ -67,7 +64,6 @@ router.get("/getall-data", dataController.getAllUserData);
 router.get('/getbyid-data/:id', dataController.getUserDataById);
 router.put('/update-data/:id', dataController.updateUserData);
 router.delete('/delete-data/:id', dataController.deleteUserDataById);
-
 router.post(
   '/add-data',
   upload.fields([
@@ -75,21 +71,12 @@ router.post(
   ]),
   dataController.addUserData
 );
-
 router.post(
   '/upload-media',
   upload.single('media'),  // 'media' is the field name from form-data
   timeSlotsController.uploadMedia
 );
-
 router.get('/getall-media', timeSlotsController.getAllMedia);
-
 router.get('/payment-report', timeSlotsController.getPaymentReport);
-
-
-// // sub admin
-// // ✅ Protected route - Only admin can add sub-admin
-// router.post("/add-sub-admin", authenticate, isAdmin, addSubAdmin);
-
 
 module.exports = router;

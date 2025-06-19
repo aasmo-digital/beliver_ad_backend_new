@@ -445,6 +445,144 @@ exports.getUserCampaigns = async (req, res) => {
 // };
 
 // user slots for current date..
+// exports.getUserSlotDetails = async (req, res) => {
+//     try {
+//         const { campaignBookingId } = req.params;
+//         console.log(`[getUserSlotDetails] Received request for campaignBookingId: ${campaignBookingId}`);
+
+//         // Validate campaignBookingId
+//         if (!campaignBookingId) {
+//             console.log("[getUserSlotDetails] Error: campaignBookingId is missing.");
+//             return res.status(400).json({ success: false, message: "campaignBookingId is required in the URL params." });
+//         }
+//         if (!mongoose.Types.ObjectId.isValid(campaignBookingId)) {
+//             console.log(`[getUserSlotDetails] Error: Invalid campaignBookingId format: ${campaignBookingId}`);
+//             return res.status(400).json({ success: false, message: "Invalid campaignBookingId format." });
+//         }
+
+//         // 1. Fetch the Campaign Booking (dataUserModel) with populated details
+//         const campaignBooking = await dataUserModels.findById(campaignBookingId)
+//             .populate('clientId', 'fullName email role')
+//             .populate('timeslot', 'name amount campaignName')
+//             .populate('locationId', 'location address')
+//             .lean();
+
+//         if (!campaignBooking) {
+//             console.log(`[getUserSlotDetails] Error: Campaign booking not found for ID: ${campaignBookingId}`);
+//             return res.status(404).json({ success: false, message: "Campaign booking not found." });
+//         }
+
+//         // Get current date (UTC)
+//         const currentDate = new Date();
+//         currentDate.setUTCHours(0, 0, 0, 0);
+//         const nextDate = new Date(currentDate);
+//         nextDate.setDate(nextDate.getDate() + 1);
+
+//         // 2. Fetch only today's slot instances for this campaign
+//         const queryConditions = {
+//             campaignBookingId: new mongoose.Types.ObjectId(campaignBookingId),
+//             slotDate: { 
+//                 $gte: currentDate,
+//                 $lt: nextDate
+//             },
+//             status: campaignBooking.status === 'Approved' ? 'Booked' : 'Reserved'
+//         };
+
+//         const slotsFromDB = await slotInstanceModels.find(queryConditions)
+//             .populate('locationId', 'location address')
+//             .lean();
+
+//         // 3. Convert time to 24-hour format for proper sorting and sort slots
+//         const sortedSlots = slotsFromDB.map(slot => {
+//             let time24 = convertTo24Hour(slot.slotStartTime);
+//             return {
+//                 ...slot,
+//                 sortableTime: time24
+//             };
+//         }).sort((a, b) => a.sortableTime.localeCompare(b.sortableTime));
+
+//         // Helper function to convert time to 24-hour format
+//         function convertTo24Hour(timeStr) {
+//             if (!timeStr) return '00:00';
+
+//             if (timeStr.includes('AM') || timeStr.includes('PM')) {
+//                 const [time, period] = timeStr.split(' ');
+//                 let [hours, minutes] = time.split(':');
+
+//                 hours = parseInt(hours);
+//                 minutes = minutes || '00';
+
+//                 if (period === 'PM' && hours < 12) hours += 12;
+//                 if (period === 'AM' && hours === 12) hours = 0;
+
+//                 return `${hours.toString().padStart(2, '0')}:${minutes}`;
+//             }
+
+//             return timeStr;
+//         }
+
+//         const campaignNameForResponse = campaignBooking.content || campaignBooking.timeslot?.campaignName || 'N/A';
+
+//         // 4. Format the sorted slots for the response
+//         const formattedSlots = sortedSlots.map(slot => {
+//             return {
+//                 slotInstanceId: slot._id,
+//                 campaignName: campaignNameForResponse,
+//                 slotDate: slot.slotDate.toISOString().split('T')[0],
+//                 slotStartTime: slot.slotStartTime,
+//                 slotIndexNumber: slot.slotIndexNumber,
+//                 slotType: slot.slotType,
+//                 status: slot.status,
+//                 mediaFile: slot.mediaFile,
+//                 url: slot.url,
+//                 uid: slot.uid,
+//                 hourId: slot.hourId,
+//                 minId: slot.minId,
+//                 slotId: slot.slotId,
+//                 location: slot.locationId ? {
+//                     id: slot.locationId._id,
+//                     name: slot.locationId.location,
+//                     address: slot.locationId.address,
+//                 } : (campaignBooking.locationId ? {
+//                     id: campaignBooking.locationId._id,
+//                     name: campaignBooking.locationId.location,
+//                     address: campaignBooking.locationId.address,
+//                 } : null),
+//             };
+//         });
+
+//         // 5. Construct the final response payload (simplified for current date only)
+//         const responsePayload = {
+//             success: true,
+//             currentDate: currentDate.toISOString().split('T')[0],
+//             campaignDetails: {
+//                 id: campaignBooking._id,
+//                 campaignName: campaignNameForResponse,
+//                 status: campaignBooking.status,
+//             },
+//             clientDetails: campaignBooking.clientId ? {
+//                 id: campaignBooking.clientId._id,
+//                 fullName: campaignBooking.clientId.fullName,
+//                 email: campaignBooking.clientId.email,
+//                 role: campaignBooking.clientId.role,
+//             } : null,
+//             totalSlotsToday: formattedSlots.length,
+//             slots: formattedSlots
+//         };
+
+//         res.status(200).json(responsePayload);
+
+//     } catch (error) {
+//         console.error('[getUserSlotDetails] Error fetching campaign slot details:', error.message, error.stack);
+//         res.status(500).json({
+//             success: false,
+//             message: 'Server error while fetching campaign slot details.',
+//             error: error.message
+//         });
+//     }
+// };
+
+//  user slots for upcoming next date==
 exports.getUserSlotDetails = async (req, res) => {
     try {
         const { campaignBookingId } = req.params;
@@ -472,21 +610,34 @@ exports.getUserSlotDetails = async (req, res) => {
             return res.status(404).json({ success: false, message: "Campaign booking not found." });
         }
 
-        // Get current date (UTC)
-        const currentDate = new Date();
-        currentDate.setUTCHours(0, 0, 0, 0);
-        const nextDate = new Date(currentDate);
-        nextDate.setDate(nextDate.getDate() + 1);
+        // ==================== CODE CHANGE START ====================
+        // Pehle yahan aaj ki date ka logic tha. Ab hum kal ki date ka logic set karenge.
 
-        // 2. Fetch only today's slot instances for this campaign
+        // Get today's date to calculate tomorrow
+        const today = new Date();
+
+        // Calculate tomorrow's date at the start of the day (00:00:00 UTC)
+        const targetDateForSlots = new Date(today);
+        targetDateForSlots.setDate(targetDateForSlots.getDate() + 1); // Add 1 day to get tomorrow
+        targetDateForSlots.setUTCHours(0, 0, 0, 0); // Set time to midnight
+
+        // Calculate the day after tomorrow to define the end of the query range
+        const dayAfterTarget = new Date(targetDateForSlots);
+        dayAfterTarget.setDate(dayAfterTarget.getDate() + 1);
+
+        console.log(`[getUserSlotDetails] Fetching slots for date: ${targetDateForSlots.toISOString().split('T')[0]}`);
+
+        // 2. Fetch only tomorrow's slot instances for this campaign
         const queryConditions = {
             campaignBookingId: new mongoose.Types.ObjectId(campaignBookingId),
-            slotDate: { 
-                $gte: currentDate,
-                $lt: nextDate
+            slotDate: {
+                $gte: targetDateForSlots, // Greater than or equal to tomorrow's start
+                $lt: dayAfterTarget       // Less than the day after tomorrow's start
             },
             status: campaignBooking.status === 'Approved' ? 'Booked' : 'Reserved'
         };
+
+        // ==================== CODE CHANGE END ====================
 
         const slotsFromDB = await slotInstanceModels.find(queryConditions)
             .populate('locationId', 'location address')
@@ -551,10 +702,11 @@ exports.getUserSlotDetails = async (req, res) => {
             };
         });
 
-        // 5. Construct the final response payload (simplified for current date only)
+        // 5. Construct the final response payload
         const responsePayload = {
             success: true,
-            currentDate: currentDate.toISOString().split('T')[0],
+            // Reflect the actual date of the slots being returned
+            slotsDate: targetDateForSlots.toISOString().split('T')[0],
             campaignDetails: {
                 id: campaignBooking._id,
                 campaignName: campaignNameForResponse,
@@ -566,7 +718,7 @@ exports.getUserSlotDetails = async (req, res) => {
                 email: campaignBooking.clientId.email,
                 role: campaignBooking.clientId.role,
             } : null,
-            totalSlotsToday: formattedSlots.length,
+            totalSlotsToday: formattedSlots.length, // You might want to rename this key to totalSlots
             slots: formattedSlots
         };
 
