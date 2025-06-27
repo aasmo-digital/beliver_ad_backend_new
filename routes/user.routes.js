@@ -8,6 +8,7 @@ const { authenticate } = require('../middleware/auth');
 const upload = require('../multer/multerImageVideo');
 const cart = require('../controllers/cart.controllers');
 const payment = require('../controllers/paymentGateway.controllers');
+const uploadToSpaces = require('../middleware/uploadToSpaces');
 
 router.post('/register', userController.register);
 router.post('/verify-otp', userController.login);
@@ -25,19 +26,19 @@ router.get('/getall-timeslots', timeSlotsController.getAllTimeSlots);
 router.post('/rate-location/:locationId', locationController.rateLocation);
 router.get('/user-slots/:campaignBookingId', dataController.getUserSlotDetails);
 
-//add data
-// router.post('/add-data', upload.single('Content', 'MediaFile'), dataController.addUserData);
-
 router.post(
   '/add-data',
   upload.fields([
     { name: 'mediaFile', maxCount: 1 }
   ]),
+  uploadToSpaces,
   dataController.addUserData
 );
 
 //  Cart Routes=======================================================
-router.post('/cart/add', upload.none(), cart.addToCart);
+router.post('/cart/add', upload.fields([
+  { name: 'mediaFile', maxCount: 1 }
+]), uploadToSpaces, cart.addToCart);
 router.get('/cart-items', cart.getCart);
 
 // Payment Gateway=====================================================

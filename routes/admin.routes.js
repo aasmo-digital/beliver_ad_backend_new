@@ -6,36 +6,37 @@ const dataController = require('../controllers/dataUser.controllers')
 const locationController = require('../controllers/location.controlers')
 const timeSlotsController = require('../controllers/timeSlots.controllers')
 const upload = require('../multer/multerImageVideo');
+const uploadToSpaces = require('../middleware/uploadToSpaces');
+
 const { authenticate, isAdmin } = require('../middleware/auth');
-// const { addSubAdmin } = require('../controllers/sub.admin.controllers');
 
 router.post("/register", adminController.register);
 router.post("/login", adminController.login);
 router.get('/location/:locationId', locationController.getSlotsByLocation);
 router.use(authenticate, isAdmin);
-// router.post("/create-subadmin", adminController.createSubAdmin);
+
 router.post("/create-subadmin", isAdmin, adminController.createSubAdmin);
 router.get("/all-sub-admin", adminController.getAllSubAdmins);
 router.delete('/delete-subadmin/:id', adminController.deleteSubAdmin);
 router.put('/update-subadmin/:id', adminController.updateSubAdmin);
 
-//users
+//users=================================================================================================================
 router.post('/add-user', userController.register);
 router.put('/update-user/:id', userController.updateUser);
 router.get("/getall-user", userController.getallUser);
 router.get("/getbyid-user/:id", userController.getbyIdUser);
 router.delete("/delete-user/:id", userController.deleteUser);
 
-//location
-router.post('/add-location', upload.single('file'), locationController.createLocation);
+//location=================================================================================================================
+router.post('/add-location', upload.single('file'), uploadToSpaces, locationController.createLocation);
 router.get('/getall-location', locationController.getAllLocations);
 router.get('/getbyid-location/:id', locationController.getLocationById);
-router.put('/update-location/:id', upload.single('file'), locationController.updateLocationById);
+router.put('/update-location/:id', upload.single('file'), uploadToSpaces, locationController.updateLocationById);
 router.delete('/delete-location/:id', locationController.deleteLocationById);
 router.get('/slots/generate-daily-schedule', locationController.generateAndStoreAllSlotsForDate);
 router.get('/playlist/:locationId/all-media', locationController.getAllMediaForLocationDate);
 
-//time slots
+//time slots=================================================================================================================
 router.post('/add-timeslots', timeSlotsController.createTimeSlots);
 router.get('/getall-timeslots', timeSlotsController.getAllTimeSlots);
 router.get('/getbyid-timeslots/:id', timeSlotsController.getTimeSlotsById);
@@ -51,15 +52,7 @@ router.get('/peak-slots', timeSlotsController.getPeakSlots);
 router.get('/normal-slots', timeSlotsController.getNormalSlots);
 router.get('/campaigns/:campaignId/reserved-slots', timeSlotsController.getReservedSlotsForCampaign);
 
-// router.get('/approved-users/slots', timeSlotsController.getApprovedUsersWithSlots);
-// router.get('/approved-users/slots', timeSlotsController.getAllApprovedUserSlots);
-// router.get('/peak-hrs/slots', timeSlotsController.getPeakSlots);
-// router.get('/normal-hrs/slots', timeSlotsController.getNormalSlots);
-// router.get('/total-slots', timeSlotsController.getTotalSlots);
-// router.get('/total-available-normal-slots', timeSlotsController.getNormalDefaultSlots);
-// router.get('/total-available-peak-slots', timeSlotsController.getPeakDefaultSlots);
-
-//data
+//data=================================================================================================================
 router.get("/getall-data", dataController.getAllUserData);
 router.get('/getbyid-data/:id', dataController.getUserDataById);
 router.put('/update-data/:id', dataController.updateUserData);
@@ -69,11 +62,13 @@ router.post(
   upload.fields([
     { name: 'mediaFile', maxCount: 1 }
   ]),
+  uploadToSpaces,
   dataController.addUserData
 );
 router.post(
   '/upload-media',
-  upload.single('media'),  // 'media' is the field name from form-data
+  upload.single('media'),
+  uploadToSpaces,
   timeSlotsController.uploadMedia
 );
 router.get('/getall-media', timeSlotsController.getAllMedia);

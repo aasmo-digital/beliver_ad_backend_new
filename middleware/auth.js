@@ -1,4 +1,3 @@
-// middleware/auth.js
 const jwt = require('jsonwebtoken');
 
 const authenticate = (req, res, next) => {
@@ -13,7 +12,7 @@ const authenticate = (req, res, next) => {
 
   try {
     const decoded = jwt.verify(token, process.env.JWT_SECRET);
-    console.log("Decoded Token:", decoded); // <--- add this
+    console.log("Decoded Token:", decoded);
 
     req.user = decoded;
 
@@ -23,7 +22,7 @@ const authenticate = (req, res, next) => {
 
     next();
   } catch (error) {
-    console.log("JWT Error:", error.message); // <--- add this
+    console.log("JWT Error:", error.message); 
 
     return res.status(401).json({ message: 'Invalid token.' });
   }

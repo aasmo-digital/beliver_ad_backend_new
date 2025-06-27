@@ -11,9 +11,13 @@ const CartItemSchema = new mongoose.Schema({
     normalSlots: Number,
     estimateReach: String,
     totalBudgets: { type: Number, required: true },
-    locationId: String,
+    locationId: {
+        type: mongoose.Schema.Types.ObjectId,
+        ref: 'Location', // Make sure 'Location' is the correct name of your Location model
+        required: true
+    },
     content: String,
-    timeslot: String,  
+    timeslot: String,
     mediaFile: String
 });
 

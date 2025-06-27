@@ -96,7 +96,7 @@ const bcrypt = require("bcrypt")
 //     }
 // };
 
-
+// User Registration=============================================================================================
 const register = async (req, res) => {
     console.log("Request Body: ", req.body);
     let { fullName, phone, email, businessName, password } = req.body;
@@ -109,9 +109,7 @@ const register = async (req, res) => {
         return res.status(400).json({ msg: 'Please provide all required fields' });
     }
 
-
     try {
-        // Check if user already exists
         let user = await User.findOne({ $or: [{ email }, { phone }] });
         if (user) {
             return res.status(400).json({
@@ -120,11 +118,9 @@ const register = async (req, res) => {
             });
         }
 
-        // Hash the password before saving
         const salt = await bcrypt.genSalt(10);
         const hashedPassword = await bcrypt.hash(password, salt);
 
-        // Create new user with hashed password
         user = new User({
             fullName,
             phone,
@@ -145,11 +141,10 @@ const register = async (req, res) => {
     }
 };
 
+// User login=====================================================================================================
 const login = async (req, res) => {
-    // Step 1: Use 'identifier' which can be either email or phone
     const { identifier, password } = req.body;
 
-    // Input validation
     if (!identifier || !password) {
         return res.status(400).json({
             success: false,
@@ -164,13 +159,10 @@ const login = async (req, res) => {
         if (isPhoneNumber) {
             searchIdentifier = identifier.replace(/\D/g, '');
         }
-        // Step 2: Use $or to find user by email OR phone
-        // Also, select the password field which is usually hidden
         const user = await User.findOne({
             $or: [{ email: identifier }, { phone: identifier }]
         }).select('+password');
 
-        // If no user is found with that email or phone
         if (!user) {
             return res.status(401).json({
                 success: false,
@@ -178,7 +170,6 @@ const login = async (req, res) => {
             });
         }
 
-        // Password comparison
         const isMatch = await bcrypt.compare(password, user.password);
         if (!isMatch) {
             return res.status(401).json({
@@ -187,14 +178,11 @@ const login = async (req, res) => {
             });
         }
 
-        // Create JWT token
         const token = jwt.sign(
             { id: user._id, role: user.role },
-            process.env.JWT_SECRET,
-            { expiresIn: '1d' } // Optional: Add an expiration time
+            process.env.JWT_SECRET
         );
 
-        // Remove password from the user object before sending the response
         user.password = undefined;
 
         return res.status(200).json({
@@ -220,6 +208,7 @@ const login = async (req, res) => {
     }
 };
 
+// User get own profile============================================================================================
 const getOwnProfile = async (req, res) => {
     try {
         const id = req.user.id;
@@ -227,12 +216,8 @@ const getOwnProfile = async (req, res) => {
         if (!id) {
             return res.status(400).json({ message: "User ID not found in token" });
         }
-
-        // Fetch user details including full details of referred users
         const user = await User.findById(id)
             .select("-otp -otpExpires")
-
-
         if (!user) {
             return res.status(404).json({ message: "User not found" });
         }
@@ -244,6 +229,7 @@ const getOwnProfile = async (req, res) => {
     }
 };
 
+// Admin get all users=============================================================================================
 const getallUser = async (req, res) => {
     try {
         const { search, page = 1, limit = 10 } = req.query;
@@ -261,8 +247,7 @@ const getallUser = async (req, res) => {
         const users = await User.find(query)
             .skip(skip)
             .limit(parseInt(limit))
-            .sort({ createdAt: -1 }); // Each user object will have _id and walletAmount
-
+            .sort({ createdAt: -1 });
         const totalUsers = await User.countDocuments(query);
 
         res.status(200).json({
@@ -270,7 +255,7 @@ const getallUser = async (req, res) => {
             totalUsers,
             totalPages: Math.ceil(totalUsers / limit),
             currentPage: parseInt(page),
-            users // The walletAmount here will be the current value from the User documents
+            users
         });
 
     } catch (error) {
@@ -279,11 +264,11 @@ const getallUser = async (req, res) => {
     }
 };
 
+// Get user by ID==================================================================================================
 const getbyIdUser = async (req, res) => {
     try {
         const { id } = req.params;
 
-        // Get user with populated campaigns
         const user = await User.findById(id)
             .populate({
                 path: 'campaigns',
@@ -295,7 +280,6 @@ const getbyIdUser = async (req, res) => {
             return res.status(404).json({ message: "User not found" });
         }
 
-        // Calculate total rejected amount (only from campaigns marked as Rejected)
         let totalRejectedAmount = 0;
         const rejectedCampaigns = user.campaigns.filter(c => c.status === 'Rejected');
 
@@ -303,7 +287,6 @@ const getbyIdUser = async (req, res) => {
             totalRejectedAmount += campaign.totalBudgets || 0;
         });
 
-        // Update wallet amount (only if different from current)
         if (user.walletAmount !== totalRejectedAmount) {
             user.walletAmount = totalRejectedAmount;
             await user.save();
@@ -323,29 +306,27 @@ const getbyIdUser = async (req, res) => {
     }
 }
 
+// Update user====================================================================================================
 const updateUser = async (req, res) => {
     try {
-        const userId = req.params.id; // Ensure the userId is correctly set in the request
+        const userId = req.params.id;
         if (!userId) {
             return res.status(400).json({ message: "User ID not found in the request" });
         }
 
-        // Extract the fields from the request body
         const { fullName, phone, email, businessName, walletAmount } = req.body;
 
-        // Construct the update object dynamically
         const updatedData = {};
         if (fullName) updatedData.fullName = fullName;
         if (phone) updatedData.phone = phone;
         if (email) updatedData.email = email;
         if (businessName) updatedData.businessName = businessName;
-        if (walletAmount) updatedData.walletAmount = walletAmount; // Add walletAmount if needed
+        if (walletAmount) updatedData.walletAmount = walletAmount;
 
         if (Object.keys(updatedData).length === 0) {
             return res.status(400).json({ message: "No data to update" });
         }
 
-        // Perform the update
         const user = await User.findByIdAndUpdate(userId, { $set: updatedData }, { new: true });
 
         if (!user) {
@@ -359,6 +340,7 @@ const updateUser = async (req, res) => {
     }
 };
 
+// Delete user====================================================================================================
 const deleteUser = async (req, res) => {
     try {
         const { id } = req.params;

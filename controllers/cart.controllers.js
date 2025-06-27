@@ -1,9 +1,8 @@
 const Cart = require('../models/cart.models');
 
-// Safe calculate function
 const calculateTotal = (items) => {
     if (!items || !Array.isArray(items)) {
-        return 0; // Agar items array nahi hai to 0 return karo
+        return 0;
     }
     return items.reduce((sum, item) => {
         if (item && typeof item.totalBudgets === 'number') {
@@ -17,15 +16,25 @@ exports.addToCart = async (req, res) => {
     try {
         const userId = req.user.id;
         const campaignData = req.body;
-        
+
         console.log("--- Add To Cart Request ---");
         console.log("User ID:", userId);
-        console.log("Received Campaign Data:", campaignData);
+        console.log("Received Text Data (req.body):", campaignData);
+        console.log("Received File Data (req.files):", req.files);
+
+        if (req.files && req.files.mediaFile && req.files.mediaFile[0]) {
+            // const mediaFilePath = req.files.mediaFile[0].path; // Or .location for S3, etc.
+            const mediaFilePath = req.files.mediaFile[0].location; // Or .location for S3, etc.
+            campaignData.mediaFile = mediaFilePath;
+            console.log("Media file path added to campaign data:", mediaFilePath);
+        } else {
+            console.log("No media file was uploaded with this request.");
+        }
 
         if (!campaignData.totalBudgets || !campaignData.clientId) {
             return res.status(400).json({ success: false, message: "Required fields are missing: totalBudgets and clientId." });
         }
-        
+
         let cart = await Cart.findOne({ userId });
 
         if (!cart) {
@@ -35,14 +44,12 @@ exports.addToCart = async (req, res) => {
             console.log("Found existing cart for user.");
         }
 
-        // Push new item
         cart.items.push(campaignData);
         console.log("Cart after pushing new item:", JSON.stringify(cart.items, null, 2));
-        
-        // Recalculate total
+
         cart.totalCartAmount = calculateTotal(cart.items);
         console.log("New Total Cart Amount:", cart.totalCartAmount);
-        
+
         await cart.save();
 
         res.status(200).json({
@@ -59,10 +66,21 @@ exports.addToCart = async (req, res) => {
 exports.getCart = async (req, res) => {
     try {
         const userId = req.user.id;
-        const cart = await Cart.findOne({ userId }).populate('userId', 'fullName email');
+
+        const cart = await Cart.findOne({ userId })
+            .populate({
+                path: 'items.locationId',
+                model: 'Location',
+                select: 'name address location city'
+            })
+            .populate({
+                path: 'items.clientId',
+                model: 'User',
+                select: 'fullName businessName'
+            });
 
         if (!cart || cart.items.length === 0) {
-            return res.status(200).json({ 
+            return res.status(200).json({
                 success: true,
                 message: 'Cart is empty',
                 data: {

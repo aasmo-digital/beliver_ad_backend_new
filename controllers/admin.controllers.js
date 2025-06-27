@@ -3,6 +3,7 @@ const bcrypt = require("bcryptjs");
 const jwt = require("jsonwebtoken");
 const SubAdmin = require("../models/sub.admin.models");
 
+// Register Admin============================================================================================
 exports.register = async (req, res) => {
   const { email, password } = req.body;
 
@@ -29,7 +30,7 @@ exports.register = async (req, res) => {
   }
 };
 
-// Login API
+// Login Admin================================================================================================
 exports.login = async (req, res) => {
   const { email, password } = req.body;
 
@@ -69,34 +70,29 @@ exports.login = async (req, res) => {
   }
 };
 
-// admin creates sub admin..
+// Admin creates sub admin====================================================================================
 exports.createSubAdmin = async (req, res) => {
   try {
     const { email, password, location } = req.body;
 
-    // Validate input
     if (!email || !password || !location) {
       return res.status(400).json({ message: 'Email, password, and location are required' });
     }
 
-    // Check if the user already exists
     const existingUser = await SubAdmin.findOne({ email });
     if (existingUser) {
       return res.status(400).json({ message: 'User already exists' });
     }
 
-    // Hash the password
     const hashedPassword = await bcrypt.hash(password, 10);
 
-    // Create new sub-admin
     const newUser = new SubAdmin({
       email,
       password: hashedPassword,
-      location, // This will be the location ID sent from frontend
+      location,
     });
     await newUser.save();
 
-    // Respond with success message
     res.status(201).json({
       message: 'Sub-admin created successfully',
       user: { email: newUser.email, role: newUser.role, location: newUser.location },
@@ -107,11 +103,11 @@ exports.createSubAdmin = async (req, res) => {
   }
 };
 
+// Admin get all subadmin's====================================================================================
 exports.getAllSubAdmins = async (req, res) => {
   try {
-    // Fetch sub-admins with populated location name
     const subAdmins = await SubAdmin.find({})
-      .populate('location', 'name')  // Assuming location is referenced as ObjectId in SubAdmin schema
+      .populate('location', 'name')
       .exec();
 
     res.status(200).json({
@@ -126,7 +122,7 @@ exports.getAllSubAdmins = async (req, res) => {
   }
 };
 
-// Delete a sub-admin
+// Delete a sub-admin==========================================================================================
 exports.deleteSubAdmin = async (req, res) => {
   try {
     const { id } = req.params;
@@ -142,18 +138,16 @@ exports.deleteSubAdmin = async (req, res) => {
   }
 };
 
-// Update a sub-admin
+// Update a sub-admin==========================================================================================
 exports.updateSubAdmin = async (req, res) => {
   try {
     const { id } = req.params;
     const { email, role, location } = req.body;
 
-    // Validate input
     if (!email || !role || !location) {
       return res.status(400).json({ message: 'All fields are required' });
     }
 
-    // Find and update the sub-admin
     const updatedSubAdmin = await SubAdmin.findByIdAndUpdate(id, { email, role, location }, { new: true });
 
     res.status(200).json({
